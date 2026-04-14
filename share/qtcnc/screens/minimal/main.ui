@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>320</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>qtcnc — minimal</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="root_layout">
+    <property name="spacing">
+     <number>12</number>
+    </property>
+    <property name="leftMargin">
+     <number>16</number>
+    </property>
+    <property name="topMargin">
+     <number>16</number>
+    </property>
+    <property name="rightMargin">
+     <number>16</number>
+    </property>
+    <property name="bottomMargin">
+     <number>16</number>
+    </property>
+    <item>
+     <widget class="StateLabel" name="state_lbl">
+      <property name="text">
+       <string>…</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">font-size: 22px; padding: 8px; background: #222; color: #eee; border-radius: 6px;</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="DroWidget" name="dro_x">
+      <property name="text">
+       <string>X: 0.0000</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">font-family: monospace; font-size: 36px; padding: 16px; background: #000; color: #0f0; border-radius: 8px;</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="button_row">
+      <property name="spacing">
+       <number>12</number>
+      </property>
+      <item>
+       <widget class="EstopButton" name="estop_btn">
+        <property name="text">
+         <string>ESTOP</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>64</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">font-size: 18px; font-weight: bold;</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="MachinePowerButton" name="power_btn">
+        <property name="text">
+         <string>MACHINE ON</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>64</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">font-size: 18px; font-weight: bold;</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <spacer name="bottom_spacer">
+      <property name="orientation">
+       <enum>Qt::Vertical</enum>
+      </property>
+      <property name="sizeHint" stdset="0">
+       <size>
+        <width>20</width>
+        <height>40</height>
+       </size>
+      </property>
+     </spacer>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>EstopButton</class>
+   <extends>QPushButton</extends>
+   <header>qtcnc.widgets.common.estop_button</header>
+  </customwidget>
+  <customwidget>
+   <class>MachinePowerButton</class>
+   <extends>QPushButton</extends>
+   <header>qtcnc.widgets.common.machine_power_button</header>
+  </customwidget>
+  <customwidget>
+   <class>DroWidget</class>
+   <extends>QLabel</extends>
+   <header>qtcnc.widgets.common.dro</header>
+  </customwidget>
+  <customwidget>
+   <class>StateLabel</class>
+   <extends>QLabel</extends>
+   <header>qtcnc.widgets.common.state_label</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,18 @@
+#!/usr/bin/python3
+"""qtcnc-gen-keys — generate a CURVE keypair for daemon or client.
+
+Thin shim that defers to `qtcnc.tools.gen_keys.main(argv)`.
+"""
+
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
+_LIB_PYTHON = os.path.normpath(os.path.join(_HERE, "..", "lib", "python"))
+if os.path.isdir(_LIB_PYTHON) and _LIB_PYTHON not in sys.path:
+    sys.path.insert(0, _LIB_PYTHON)
+
+from qtcnc.tools.gen_keys import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

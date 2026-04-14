@@ -1,0 +1,22 @@
+#!/usr/bin/python3
+"""qtcnc — GUI client launcher.
+
+Thin shim that defers everything to `qtcnc.bootstrap.main(argv)`. The
+bootstrap module handles argument parsing, screen resolution, the
+QApplication, the widget tree, and the transport wiring.
+"""
+
+import os
+import sys
+
+# Make the in-tree `lib/python` importable when this script is run from a
+# source checkout (matches the pattern used by the axis shim).
+_HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
+_LIB_PYTHON = os.path.normpath(os.path.join(_HERE, "..", "lib", "python"))
+if os.path.isdir(_LIB_PYTHON) and _LIB_PYTHON not in sys.path:
+    sys.path.insert(0, _LIB_PYTHON)
+
+from qtcnc.bootstrap import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

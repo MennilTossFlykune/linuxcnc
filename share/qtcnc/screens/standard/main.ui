@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1280</width>
+    <height>800</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>qtcnc — standard</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="root_layout">
+    <property name="spacing">
+     <number>8</number>
+    </property>
+    <property name="leftMargin">
+     <number>8</number>
+    </property>
+    <property name="topMargin">
+     <number>8</number>
+    </property>
+    <property name="rightMargin">
+     <number>8</number>
+    </property>
+    <property name="bottomMargin">
+     <number>8</number>
+    </property>
+    <item>
+     <layout class="QHBoxLayout" name="top_bar">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <item>
+       <widget class="EstopButton" name="estop_btn">
+        <property name="text">
+         <string>ESTOP</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>140</width>
+          <height>48</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">font-size: 16px; font-weight: bold;</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="MachinePowerButton" name="power_btn">
+        <property name="text">
+         <string>MACHINE ON</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>140</width>
+          <height>48</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">font-size: 16px; font-weight: bold;</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="StateLabel" name="state_lbl">
+        <property name="text">
+         <string>…</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignCenter</set>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>220</width>
+          <height>48</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">font-size: 16px; padding: 4px 12px; background: #222; color: #eee; border-radius: 4px;</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="FileOpenButton" name="file_open_btn">
+        <property name="text">
+         <string>Open G-code</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>240</width>
+          <height>48</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">font-size: 14px;</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="top_bar_spacer">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="body_row">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <item>
+       <layout class="QVBoxLayout" name="left_col">
+        <property name="spacing">
+         <number>8</number>
+        </property>
+        <item>
+         <widget class="DroGrid" name="dro_grid">
+          <property name="styleSheet">
+           <string notr="true">QWidget { font-family: monospace; font-size: 18px; padding: 6px; background: #000; color: #0f0; border-radius: 6px; }</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="JogPad" name="jog_pad"/>
+        </item>
+        <item>
+         <spacer name="left_col_spacer">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="GcodePreview" name="gcode_preview">
+        <property name="minimumSize">
+         <size>
+          <width>400</width>
+          <height>300</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QVBoxLayout" name="right_col">
+        <property name="spacing">
+         <number>8</number>
+        </property>
+        <item>
+         <widget class="QLabel" name="feed_label">
+          <property name="text">
+           <string>Feed override</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="OverrideSlider" name="feed_override">
+          <property name="minimumSize">
+           <size>
+            <width>220</width>
+            <height>36</height>
+           </size>
+          </property>
+          <property name="kind" stdset="0">
+           <string>feed</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="rapid_label">
+          <property name="text">
+           <string>Rapid override</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="OverrideSlider" name="rapid_override">
+          <property name="minimumSize">
+           <size>
+            <width>220</width>
+            <height>36</height>
+           </size>
+          </property>
+          <property name="kind" stdset="0">
+           <string>rapid</string>
+          </property>
+          <property name="max_value" stdset="0">
+           <double>1.0</double>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="spindle_label">
+          <property name="text">
+           <string>Spindle override</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="OverrideSlider" name="spindle_override">
+          <property name="minimumSize">
+           <size>
+            <width>220</width>
+            <height>36</height>
+           </size>
+          </property>
+          <property name="kind" stdset="0">
+           <string>spindle</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="SpindleControl" name="spindle_ctl"/>
+        </item>
+        <item>
+         <spacer name="right_col_spacer">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="GcodeView" name="gcode_view">
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>160</height>
+       </size>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">QPlainTextEdit { font-family: monospace; font-size: 12px; background: #f8f8f0; }</string>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>EstopButton</class>
+   <extends>QPushButton</extends>
+   <header>qtcnc.widgets.common.estop_button</header>
+  </customwidget>
+  <customwidget>
+   <class>MachinePowerButton</class>
+   <extends>QPushButton</extends>
+   <header>qtcnc.widgets.common.machine_power_button</header>
+  </customwidget>
+  <customwidget>
+   <class>StateLabel</class>
+   <extends>QLabel</extends>
+   <header>qtcnc.widgets.common.state_label</header>
+  </customwidget>
+  <customwidget>
+   <class>FileOpenButton</class>
+   <extends>QPushButton</extends>
+   <header>qtcnc.widgets.common.file_open_button</header>
+  </customwidget>
+  <customwidget>
+   <class>DroGrid</class>
+   <extends>QWidget</extends>
+   <header>qtcnc.widgets.common.dro_grid</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>JogPad</class>
+   <extends>QWidget</extends>
+   <header>qtcnc.widgets.common.jog_pad</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>GcodePreview</class>
+   <extends>QGraphicsView</extends>
+   <header>qtcnc.widgets.common.gcode_preview</header>
+  </customwidget>
+  <customwidget>
+   <class>OverrideSlider</class>
+   <extends>QWidget</extends>
+   <header>qtcnc.widgets.common.override_slider</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>SpindleControl</class>
+   <extends>QWidget</extends>
+   <header>qtcnc.widgets.common.spindle_control</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>GcodeView</class>
+   <extends>QPlainTextEdit</extends>
+   <header>qtcnc.widgets.common.gcode_view</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,21 @@
+#!/usr/bin/python3
+"""qtcnc-serverd — the qtcnc daemon launcher.
+
+Thin shim that defers everything to `qtcnc.server.main(argv)`. The
+server module owns the `linuxcnc.stat/command/error_channel` and the
+`hal.component("qtcnc")` — this wrapper does nothing except make the
+package importable from a source checkout.
+"""
+
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
+_LIB_PYTHON = os.path.normpath(os.path.join(_HERE, "..", "lib", "python"))
+if os.path.isdir(_LIB_PYTHON) and _LIB_PYTHON not in sys.path:
+    sys.path.insert(0, _LIB_PYTHON)
+
+from qtcnc.server import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
