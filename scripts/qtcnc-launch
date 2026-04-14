@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+# usage: qtcnc-launch [--client] <INI file>
+#
+# Brings up the LinuxCNC NML+HAL stack and runs qtcnc-serverd in the
+# foreground. With --client, also spawns the qtcnc GUI client and waits
+# for it. Modeled on machinekit-hal's launcher.py — small primitives,
+# no display program, no INI rewriting. Cleans up everything on exit.
+
+import argparse
+import os
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+
+EMC2_HOME       = "/home/nilas/Downloads/linuxcnc"
+EMC2_BIN_DIR    = "/home/nilas/Downloads/linuxcnc/bin"
+EMC2_RTLIB_DIR  = "/home/nilas/Downloads/linuxcnc/rtlib"
+HALLIB_DIR      = "/home/nilas/Downloads/linuxcnc/lib/hallib"
+REALTIME        = "/home/nilas/Downloads/linuxcnc/scripts/realtime"
+DEFAULT_NMLFILE = "/home/nilas/Downloads/linuxcnc/configs/common/linuxcnc.nml"
+LOCKFILE        = "/tmp/linuxcnc.lock"
+
+INIFILE = None
+NMLFILE = None
+HALCMD  = ["halcmd"]
+
+_processes = []
+_stack_up  = False
+_realtime_started = False
+_exiting   = False
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def die(msg, code=1):
+    print(msg, file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+def inivar(*args):
+    try:
+        r = subprocess.run(["inivar", *args], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.rstrip("\n")
+
+
+def get_ini(var, sec, default=""):
+    return inivar("-ini", INIFILE, "-var", var, "-sec", sec) or default
+
+
+def get_ini_num(var, sec, num):
+    return inivar("-ini", INIFILE, "-var", var, "-sec", sec,
+                  "-num", str(num)) or ""
+
+
+def get_ini_tildeexpand(var, sec, num=None):
+    args = ["-tildeexpand", "-ini", INIFILE, "-var", var, "-sec", sec]
+    if num is not None:
+        args += ["-num", str(num)]
+    return inivar(*args) or ""
+
+
+def run(argv, **kw):
+    return subprocess.run(argv, **kw)
+
+
+def start_process(argv, name=None):
+    name = name or os.path.basename(argv[0])
+    log(f"starting {name}...")
+    proc = subprocess.Popen(argv, preexec_fn=os.setsid)
+    proc._qtcnc_name = name
+    _processes.append(proc)
+    return proc
+
+
+def signal_process(proc, sig=signal.SIGTERM):
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def signal_all_processes(sig=signal.SIGTERM):
+    for proc in _processes:
+        signal_process(proc, sig)
+
+
+def stop_process(proc, timeout=5):
+    """Reap a process. Caller must guarantee no other thread is in proc.wait()."""
+    if proc.poll() is not None:
+        return
+    name = getattr(proc, "_qtcnc_name", "process")
+    log(f"stopping {name}...")
+    signal_process(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        signal_process(proc, signal.SIGKILL)
+        proc.wait()
+
+
+def reap_all_processes(timeout=5):
+    for proc in reversed(_processes):
+        stop_process(proc, timeout=timeout)
+    _processes.clear()
+
+
+def kill_pidof(name):
+    try:
+        r = subprocess.run(["pidof", "-x", name], capture_output=True, text=True)
+    except FileNotFoundError:
+        return
+    if r.returncode != 0 or not r.stdout.strip():
+        return
+    for pid in r.stdout.split():
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, ValueError):
+            pass
+    for _ in range(20):
+        try:
+            r = subprocess.run(["pidof", "-x", name],
+                               capture_output=True, text=True)
+        except FileNotFoundError:
+            return
+        if r.returncode != 0 or not r.stdout.strip():
+            return
+        time.sleep(0.1)
+    for pid in r.stdout.split():
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, ValueError):
+            pass
+
+
+def parse_nml_shmkeys(path):
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 10 and parts[0] == "B" and parts[2] == "SHMEM":
+                    yield parts[9]
+    except OSError:
+        return
+
+
+def find_hal_file(cfgfile):
+    if cfgfile.startswith("LIB:"):
+        leaf = cfgfile[4:]
+        found = os.path.join(HALLIB_DIR, leaf)
+        if not os.access(found, os.R_OK):
+            die(f"CANNOT READ LIB:file:{found}")
+        return found
+    if cfgfile.startswith("/"):
+        return cfgfile
+    if os.access(cfgfile, os.R_OK):
+        return os.path.realpath(cfgfile)
+    candidate = os.path.join(HALLIB_DIR, cfgfile)
+    if os.access(candidate, os.R_OK):
+        return candidate
+    die(f"CANNOT FIND HAL FILE: {cfgfile}")
+
+
+def bring_up_stack():
+    global _stack_up, _realtime_started, NMLFILE
+
+    if os.path.exists(LOCKFILE):
+        die(f"{LOCKFILE} exists; another LinuxCNC instance may be running. "
+            f"Remove it manually if stale.")
+
+    NMLFILE = get_ini("NML_FILE", "EMC", DEFAULT_NMLFILE)
+    os.environ["NMLFILE"] = NMLFILE
+    os.environ["INI_FILE_NAME"] = INIFILE
+    os.environ["TRAJ_COORDINATES"] = get_ini("COORDINATES", "TRAJ")
+    os.environ["KINS_KINEMATICS"] = get_ini("KINEMATICS", "KINS")
+    os.environ["HAL_RTMOD_DIR"] = EMC2_RTLIB_DIR
+    os.environ["HALLIB_DIR"] = HALLIB_DIR
+    os.environ["HALLIB_PATH"] = "." + os.pathsep + HALLIB_DIR
+
+    open(LOCKFILE, "w").close()
+
+    log(f"qtcnc-launch: bringing up LinuxCNC stack for {INIFILE}")
+
+    if not shutil.which("linuxcncsvr"):
+        die("linuxcncsvr not on PATH; did you source scripts/rip-environment?")
+
+    log("starting linuxcncsvr...")
+    r = run(["linuxcncsvr", "-ini", INIFILE])
+    if r.returncode != 0:
+        die("linuxcncsvr failed to start")
+
+    log("loading realtime...")
+    r = run([REALTIME, "start"])
+    if r.returncode != 0:
+        die("realtime did not load")
+    _realtime_started = True
+
+    tpmod   = get_ini("TPMOD", "TRAJ", "tpmod")
+    homemod = get_ini("HOMEMOD", "EMCMOT", "homemod")
+    log(f"loadrt {tpmod} {homemod}")
+    run(HALCMD + ["loadrt", *shlex.split(tpmod, posix=True)])
+    run(HALCMD + ["loadrt", *shlex.split(homemod, posix=True)])
+
+    emctask = get_ini("TASK", "TASK", "milltask")
+    if emctask == "emctask":
+        emctask = "linuxcnctask"
+    log(f"starting {emctask} (via inihal)...")
+    r = run(["halcmd", "loadusr", "-Wn", "inihal", emctask, "-ini", INIFILE])
+    if r.returncode != 0:
+        die(f"{emctask} failed to start")
+
+    num = 1
+    while True:
+        raw = get_ini_tildeexpand("HALFILE", "HAL", num)
+        if not raw:
+            break
+        tokens = shlex.split(raw, posix=True)
+        cfgfile = find_hal_file(tokens[0])
+        log(f"loading HAL file: {cfgfile}")
+        if cfgfile.endswith(".tcl"):
+            r = run(["haltcl", "-i", INIFILE, cfgfile, *tokens[1:]])
+        else:
+            r = run(HALCMD + ["-i", INIFILE, "-f", cfgfile])
+        if r.returncode != 0:
+            die(f"HAL file failed: {cfgfile}")
+        num += 1
+
+    log("halcmd start...")
+    run(HALCMD + ["start"])
+
+    deadline = time.monotonic() + 10
+    while True:
+        r = run(HALCMD + ["getp", "ini.traj_max_velocity"],
+                capture_output=True, text=True)
+        try:
+            val = float(r.stdout.strip())
+        except (ValueError, AttributeError):
+            val = 0.0
+        if val != 0.0:
+            break
+        if time.monotonic() >= deadline:
+            log("warning: ini.traj_max_velocity still 0 after 10s; continuing")
+            break
+        time.sleep(0.1)
+
+    _stack_up = True
+    log("qtcnc-launch: stack ready")
+
+
+def tear_down_stack():
+    global _stack_up, _realtime_started
+
+    if not _stack_up:
+        try:
+            os.remove(LOCKFILE)
+        except OSError:
+            pass
+        return
+
+    log("qtcnc-launch: shutting down LinuxCNC stack")
+
+    reap_all_processes()
+
+    for task in ("milltask", "linuxcncsvr", "motion-logger"):
+        kill_pidof(task)
+
+    run(HALCMD + ["stop"], capture_output=True)
+    run(HALCMD + ["unload", "all"], capture_output=True)
+    time.sleep(0.5)
+
+    if _realtime_started:
+        try:
+            run([REALTIME, "stop"])
+        except FileNotFoundError:
+            pass
+        _realtime_started = False
+
+    if NMLFILE and os.path.isfile(NMLFILE):
+        for shmkey in parse_nml_shmkeys(NMLFILE):
+            try:
+                run(["ipcrm", "-M", shmkey], capture_output=True)
+            except FileNotFoundError:
+                pass
+
+    try:
+        os.remove(LOCKFILE)
+    except OSError:
+        pass
+
+    _stack_up = False
+
+
+def cleanup_ipc_files(endpoint):
+    if not endpoint.startswith("ipc://"):
+        return
+    base = endpoint[len("ipc://"):]
+    for suffix in (".pub", ".cmd"):
+        try:
+            os.remove(base + suffix)
+        except OSError:
+            pass
+
+
+def _signal_handler(signum, frame):
+    """Signal handler: NEVER call wait() here. The main thread is blocked
+    in a Popen.wait() and Popen has a per-instance _waitpid_lock; calling
+    wait() from a signal handler on the same Popen deadlocks on that lock.
+    Just send SIGTERM to children — the main thread's wait() will return
+    naturally, then main runs the rest of cleanup in its `finally` block.
+    """
+    global _exiting
+    if _exiting:
+        return
+    _exiting = True
+    log(f"\nqtcnc-launch: got signal {signum}, signalling children")
+    signal_all_processes(signal.SIGTERM)
+
+
+def main():
+    global INIFILE
+
+    p = argparse.ArgumentParser(
+        prog="qtcnc-launch",
+        description="Bring up LinuxCNC stack + qtcnc-serverd "
+                    "(and optionally the qtcnc GUI client).",
+    )
+    p.add_argument("ini", help="LinuxCNC INI file")
+    p.add_argument("--client", action="store_true",
+                   help="also start the qtcnc GUI client and wait for it")
+    p.add_argument("--screen", default=None,
+                   help="screen name passed to the client (with --client)")
+    p.add_argument("--endpoint", "--bind", dest="endpoint", default=None,
+                   help="ZMQ endpoint qtcnc-serverd binds to. Defaults to "
+                        "ipc:///tmp/qtcnc-<uid> for local use. Use "
+                        "tcp://0.0.0.0:5570 (or any host:port) to accept "
+                        "remote GUI clients over the network — see "
+                        "docs/qtcnc-remote.md for CURVE setup.")
+    args = p.parse_args()
+
+    INIFILE = os.path.realpath(args.ini)
+    if not os.path.isfile(INIFILE):
+        die(f"INI file not found: {args.ini}")
+    ini_dir = os.path.dirname(INIFILE)
+
+    endpoint = args.endpoint or f"ipc:///tmp/qtcnc-{os.getuid()}"
+
+    if not shutil.which("qtcnc-serverd"):
+        die("qtcnc-serverd not on PATH; did you source scripts/rip-environment?")
+    if args.client and not shutil.which("qtcnc"):
+        die("qtcnc not on PATH; did you source scripts/rip-environment?")
+
+    signal.signal(signal.SIGINT,  _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    try:
+        os.chdir(ini_dir)
+    except OSError as e:
+        die(f"cannot chdir to {ini_dir}: {e}")
+
+    try:
+        bring_up_stack()
+
+        log(f"qtcnc-launch: starting qtcnc-serverd ({endpoint})")
+        server_argv = ["qtcnc-serverd", "--ini", INIFILE, "--endpoint", endpoint]
+        server_proc = start_process(server_argv, name="qtcnc-serverd")
+
+        if args.client:
+            log("qtcnc-launch: starting qtcnc GUI client")
+            client_argv = ["qtcnc", "--ini", INIFILE, "--server-endpoint", endpoint]
+            if args.screen:
+                client_argv += ["--screen", args.screen]
+            client_proc = start_process(client_argv, name="qtcnc")
+            rc = client_proc.wait()
+            log(f"qtcnc-launch: client exited rc={rc}")
+        else:
+            log(f"qtcnc-launch: connect a client with:")
+            log(f"  qtcnc --ini {INIFILE} --server-endpoint {endpoint}")
+            log("qtcnc-launch: Ctrl-C to stop")
+            try:
+                rc = server_proc.wait()
+                log(f"qtcnc-launch: qtcnc-serverd exited rc={rc}")
+            except KeyboardInterrupt:
+                pass
+    finally:
+        tear_down_stack()
+        cleanup_ipc_files(endpoint)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
