@@ -86,7 +86,7 @@ class _FakeHandler:
 
     def on_exec_command(self, verb: CommandVerb, kwargs: dict[str, Any]) -> None:
         self.commands.append((verb, dict(kwargs)))
-        if verb == CommandVerb.ESTOP_RESET:
+        if verb == CommandVerb.STATE_ESTOP_RESET:
             self._state = replace(
                 self._state,
                 machine=replace(self._state.machine, estop=False),
@@ -264,11 +264,11 @@ class TestGetSnapshot:
 
 
 class TestExecCommand:
-    def test_estop_reset_round_trip_over_tcp(self, transport_pair):
+    def test_state_estop_reset_round_trip_over_tcp(self, transport_pair):
         client, _, handler = transport_pair
         client.hello()
-        client.exec_command(CommandVerb.ESTOP_RESET)
-        assert handler.commands[-1][0] == CommandVerb.ESTOP_RESET
+        client.exec_command(CommandVerb.STATE_ESTOP_RESET)
+        assert handler.commands[-1][0] == CommandVerb.STATE_ESTOP_RESET
         snap = client.get_snapshot()
         assert snap.machine.estop is False
 

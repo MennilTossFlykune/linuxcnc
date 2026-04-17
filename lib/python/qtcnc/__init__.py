@@ -9,4 +9,4 @@ transport backs --mock mode for UI development without linuxcnc running.
 """
 
 __version__ = "0.1.0"
-PROTOCOL_VERSION = (1, 0)
+PROTOCOL_VERSION = (1, 1)

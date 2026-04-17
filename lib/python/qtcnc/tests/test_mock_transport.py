@@ -12,6 +12,7 @@ from qtcnc.core.types import (
     ErrorMessage,
     ErrorSeverity,
     MachineState,
+    MotionMode,
     Position,
     SpindleDir,
     TaskMode,
@@ -19,7 +20,7 @@ from qtcnc.core.types import (
 )
 from qtcnc.signals import CommandVerb
 from qtcnc.transport.base import NackError, TransportClosed
-from qtcnc.transport.mock import MockTransport, _plausible_snapshot
+from qtcnc.transport.mock import _NON_MUTATING_VERBS, MockTransport, _plausible_snapshot
 
 
 class Recorder:
@@ -101,37 +102,37 @@ class TestCloseAndClosed:
         with pytest.raises(TransportClosed):
             t.get_snapshot()
         with pytest.raises(TransportClosed):
-            t.exec_command(CommandVerb.ESTOP)
+            t.exec_command(CommandVerb.STATE_ESTOP)
 
 
 class TestExecCommandEstopPower:
     def test_estop_reset_releases_estop(self):
         t = MockTransport()
         rec = Recorder(t)
-        t.exec_command(CommandVerb.ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
         assert t.get_snapshot().machine.estop is False
         assert t.get_snapshot().task_state == TaskState.ESTOP_RESET
         # state_diff should have been emitted
         assert len(rec.state_diffs) == 1
 
-    def test_power_on_requires_estop_released(self):
+    def test_state_on_requires_estop_released(self):
         t = MockTransport()
         with pytest.raises(NackError):
-            t.exec_command(CommandVerb.POWER_ON)
+            t.exec_command(CommandVerb.STATE_ON)
 
-    def test_power_on_after_estop_reset(self):
+    def test_state_on_after_estop_reset(self):
         t = MockTransport()
-        t.exec_command(CommandVerb.ESTOP_RESET)
-        t.exec_command(CommandVerb.POWER_ON)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ON)
         s = t.get_snapshot()
         assert s.machine.powered is True
         assert s.task_state == TaskState.ON
 
     def test_estop_while_powered_clears_power(self):
         t = MockTransport()
-        t.exec_command(CommandVerb.ESTOP_RESET)
-        t.exec_command(CommandVerb.POWER_ON)
-        t.exec_command(CommandVerb.ESTOP)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ON)
+        t.exec_command(CommandVerb.STATE_ESTOP)
         s = t.get_snapshot()
         assert s.machine.estop is True
         assert s.machine.powered is False
@@ -148,34 +149,34 @@ class TestExecCommandOther:
         with pytest.raises(NackError):
             t.exec_command(CommandVerb.SET_MODE, mode="auto")
 
-    def test_home_axis(self):
+    def test_home(self):
         t = MockTransport()
-        t.exec_command(CommandVerb.HOME_AXIS, axis=1)
+        t.exec_command(CommandVerb.HOME, joint=1)
         homed = t.get_snapshot().machine.homed
         assert homed[1] is True
         assert homed[0] is False
 
-    def test_unhome_axis(self):
+    def test_unhome(self):
         t = MockTransport()
-        t.exec_command(CommandVerb.HOME_ALL)
-        t.exec_command(CommandVerb.UNHOME_AXIS, axis=2)
+        t.exec_command(CommandVerb.HOME, joint=-1)
+        t.exec_command(CommandVerb.UNHOME, joint=2)
         homed = t.get_snapshot().machine.homed
         assert homed[0] is True
         assert homed[2] is False
 
     def test_home_all(self):
         t = MockTransport()
-        t.exec_command(CommandVerb.HOME_ALL)
+        t.exec_command(CommandVerb.HOME, joint=-1)
         assert all(t.get_snapshot().machine.homed)
 
-    def test_feed_override(self):
+    def test_feedrate(self):
         t = MockTransport()
-        t.exec_command(CommandVerb.SET_FEED_OVERRIDE, value=0.5)
+        t.exec_command(CommandVerb.FEEDRATE, value=0.5)
         assert t.get_snapshot().overrides.feed == 0.5
 
-    def test_spindle_override_grows_tuple(self):
+    def test_spindleoverride_grows_tuple(self):
         t = MockTransport()
-        t.exec_command(CommandVerb.SET_SPINDLE_OVERRIDE, index=2, value=1.5)
+        t.exec_command(CommandVerb.SPINDLEOVERRIDE, index=2, value=1.5)
         sp = t.get_snapshot().overrides.spindles
         assert len(sp) >= 3
         assert sp[2] == 1.5
@@ -188,35 +189,147 @@ class TestExecCommandOther:
         assert sp.speed == 1200.0
         assert sp.enabled is True
 
-    def test_spindle_stop(self):
+    def test_spindle_off(self):
         t = MockTransport()
         t.exec_command(CommandVerb.SPINDLE_FORWARD, speed=1000)
-        t.exec_command(CommandVerb.SPINDLE_STOP)
+        t.exec_command(CommandVerb.SPINDLE_OFF)
         sp = t.get_snapshot().spindles[0]
         assert sp.direction == SpindleDir.STOP
         assert sp.enabled is False
         assert sp.speed == 0.0
 
-    def test_program_run_pause_resume_stop(self):
+    def test_auto_run_pause_resume_abort(self):
         t = MockTransport()
-        t.exec_command(CommandVerb.PROGRAM_RUN)
+        t.exec_command(CommandVerb.AUTO_RUN)
         assert t.get_snapshot().program.is_running is True
-        t.exec_command(CommandVerb.PROGRAM_PAUSE)
+        t.exec_command(CommandVerb.AUTO_PAUSE)
         assert t.get_snapshot().program.is_paused is True
-        t.exec_command(CommandVerb.PROGRAM_RESUME)
+        t.exec_command(CommandVerb.AUTO_RESUME)
         assert t.get_snapshot().program.is_paused is False
-        t.exec_command(CommandVerb.PROGRAM_STOP)
+        t.exec_command(CommandVerb.ABORT)
         assert t.get_snapshot().program.is_running is False
 
     def test_noop_verbs_dont_mutate(self):
         t = MockTransport()
         before = t.get_snapshot()
         for verb in (
-            CommandVerb.JOG_START, CommandVerb.JOG_STOP,
+            CommandVerb.JOG_CONTINUOUS, CommandVerb.JOG_STOP,
             CommandVerb.MDI, CommandVerb.MIST_ON, CommandVerb.FLOOD_ON,
         ):
             t.exec_command(verb)
         assert t.get_snapshot() == before
+
+
+class TestApplyNewVerbs:
+    """Verbs that MockTransport selectively models beyond the base set."""
+
+    def test_traj_mode_updates_motion_mode(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.TRAJ_MODE, mode=MotionMode.TELEOP)
+        assert t.get_snapshot().machine.motion_mode == MotionMode.TELEOP
+
+    def test_traj_mode_requires_motion_mode_enum(self):
+        t = MockTransport()
+        with pytest.raises(NackError):
+            t.exec_command(CommandVerb.TRAJ_MODE, mode=3)
+
+    def test_brake_engage_sets_spindle_brake(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.BRAKE_ENGAGE)
+        assert t.get_snapshot().spindles[0].brake is True
+
+    def test_brake_release_clears_spindle_brake(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.BRAKE_ENGAGE)
+        t.exec_command(CommandVerb.BRAKE_RELEASE)
+        assert t.get_snapshot().spindles[0].brake is False
+
+    def test_brake_engage_addresses_index(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.BRAKE_ENGAGE, index=1)
+        spindles = t.get_snapshot().spindles
+        assert len(spindles) >= 2
+        assert spindles[0].brake is False
+        assert spindles[1].brake is True
+
+    def test_set_feed_override_toggles_flag(self):
+        t = MockTransport()
+        assert t.get_snapshot().overrides.feed_enabled is True
+        t.exec_command(CommandVerb.SET_FEED_OVERRIDE, enabled=False)
+        assert t.get_snapshot().overrides.feed_enabled is False
+        t.exec_command(CommandVerb.SET_FEED_OVERRIDE, enabled=True)
+        assert t.get_snapshot().overrides.feed_enabled is True
+
+    def test_set_feed_hold_toggles_flag(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.SET_FEED_HOLD, enabled=False)
+        assert t.get_snapshot().overrides.hold_enabled is False
+
+    def test_set_optional_stop_toggles_task_info(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.SET_OPTIONAL_STOP, enabled=True)
+        assert t.get_snapshot().task_info.optional_stop is True
+        t.exec_command(CommandVerb.SET_OPTIONAL_STOP, enabled=False)
+        assert t.get_snapshot().task_info.optional_stop is False
+
+    def test_set_block_delete_toggles_task_info(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.SET_BLOCK_DELETE, enabled=True)
+        assert t.get_snapshot().task_info.block_delete is True
+
+    def test_set_digital_output_mutates_io(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.SET_DIGITAL_OUTPUT, index=3, value=True)
+        dout = t.get_snapshot().io.digital_out
+        assert dout[3] is True
+        assert dout[0] is False
+
+    def test_set_digital_output_grows_tuple(self):
+        t = MockTransport()
+        t.exec_command(CommandVerb.SET_DIGITAL_OUTPUT, index=16, value=True)
+        dout = t.get_snapshot().io.digital_out
+        assert len(dout) >= 17
+        assert dout[16] is True
+
+
+class TestNonMutatingVerbs:
+    """Verbs that MockTransport accepts but does not model — verify they
+    are silently accepted and do not change state."""
+
+    def test_non_mutating_verbs_dont_change_state(self):
+        t = MockTransport()
+        before = t.get_snapshot()
+        verbs = (
+            CommandVerb.DEBUG,
+            CommandVerb.MAXVEL,
+            CommandVerb.TOOL_OFFSET,
+            CommandVerb.LOAD_TOOL_TABLE,
+            CommandVerb.TASK_PLAN_SYNCH,
+            CommandVerb.OVERRIDE_LIMITS,
+            CommandVerb.RESET_INTERPRETER,
+            CommandVerb.AUTO_REVERSE,
+            CommandVerb.AUTO_FORWARD,
+            CommandVerb.SET_MIN_LIMIT,
+            CommandVerb.SET_MAX_LIMIT,
+            CommandVerb.SET_SPINDLE_OVERRIDE,
+            CommandVerb.SET_ADAPTIVE_FEED,
+            CommandVerb.SET_ANALOG_OUTPUT,
+            CommandVerb.ERROR_MSG,
+            CommandVerb.TEXT_MSG,
+            CommandVerb.DISPLAY_MSG,
+            CommandVerb.SPINDLE_INCREASE,
+            CommandVerb.SPINDLE_DECREASE,
+            CommandVerb.SPINDLE_CONSTANT,
+        )
+        for verb in verbs:
+            t.exec_command(verb)
+        assert t.get_snapshot() == before
+
+    def test_every_non_mutating_verb_is_accepted(self):
+        t = MockTransport()
+        for verb in _NON_MUTATING_VERBS:
+            t.exec_command(verb)
+        # No exception means every listed verb reached the non-mutating path.
 
 
 class TestLoadProgram:
@@ -369,7 +482,7 @@ class TestDiffCorrectness:
     def test_single_estop_reset_emits_two_fields(self):
         t = MockTransport()
         rec = Recorder(t)
-        t.exec_command(CommandVerb.ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
         # machine + task_state should both change
         assert len(rec.state_diffs) == 1
         names = {name for name, _ in rec.state_diffs[0]}

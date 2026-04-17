@@ -13,9 +13,9 @@ Colours: rapid = light gray dashed, feed = dark blue, arc = teal,
 probe = orange, rigid_tap = purple. Current-line highlight overlays a
 yellow stroke on the segments whose `line` matches.
 
-Performance: a segment ceiling of 500 000 (from the v2 plan's risk
-register) triggers an on-screen "preview disabled" overlay instead of
-attempting to render. Below that we rely on Qt's scene BSP indexing.
+Performance: a segment ceiling of 500 000 triggers an on-screen
+"preview disabled" overlay instead of attempting to render. Below that
+we rely on Qt's scene BSP indexing.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from qtpy.QtWidgets import (
 )
 
 from qtcnc.core.program import (
-    GcodeParseError,
     GcodeProgram,
     ToolpathSegment,
     parse,
@@ -85,13 +84,13 @@ class GcodePreview(QtcncWidget, QGraphicsView):
 
     def qtcnc_setup(self) -> None:
         self.connect_status("program_loaded", self._on_program_loaded)
-        self.connect_status("program_line_changed", self._on_line_changed)
+        self.connect_status("motion_line_changed", self._on_line_changed)
         self.connect_status("program_closed", self._on_program_closed)
         state = self.window().qtcnc_status.state
         if state.program.path:
             self._on_program_loaded(state.program.path, state.program)
-            if state.program.current_line > 0:
-                self.set_current_line(state.program.current_line)
+            if state.program.motion_line > 0:
+                self.set_current_line(state.program.motion_line)
 
     # ----- public API -----
 
@@ -101,8 +100,8 @@ class GcodePreview(QtcncWidget, QGraphicsView):
         if not path:
             return
         try:
-            program = parse(path)
-        except GcodeParseError as e:
+            program = parse(path, lenient=True)
+        except Exception as e:
             self._show_overlay(f"parse failed: {e}")
             return
         self.load_program(program)
@@ -226,4 +225,5 @@ class GcodePreview(QtcncWidget, QGraphicsView):
         self._scene.addItem(item)
         self._overlay_item = item
         self._scene.setSceneRect(item.boundingRect().adjusted(-4, -4, 4, 4))
+        self.resetTransform()
         self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)

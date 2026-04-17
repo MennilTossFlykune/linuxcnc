@@ -2,7 +2,7 @@
 
 Widgets declare their HAL pin needs as a class attribute:
 
-    class DroWidget(QtcncWidget, QLabel):
+    class ValueLabel(QtcncWidget, QLabel):
         HAL_PINS = [
             HalPinSpec(name="qtcnc.{name}.value-out", type=HalType.FLOAT, dir=HalDir.OUT),
         ]

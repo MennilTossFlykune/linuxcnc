@@ -3,8 +3,8 @@
 #
 # Brings up the LinuxCNC NML+HAL stack and runs qtcnc-serverd in the
 # foreground. With --client, also spawns the qtcnc GUI client and waits
-# for it. Modeled on machinekit-hal's launcher.py — small primitives,
-# no display program, no INI rewriting. Cleans up everything on exit.
+# for it. Cleans up everything on exit and kills any stale session on
+# startup.
 
 import argparse
 import os
@@ -177,10 +177,6 @@ def find_hal_file(cfgfile):
 def bring_up_stack():
     global _stack_up, _realtime_started, NMLFILE
 
-    if os.path.exists(LOCKFILE):
-        die(f"{LOCKFILE} exists; another LinuxCNC instance may be running. "
-            f"Remove it manually if stale.")
-
     NMLFILE = get_ini("NML_FILE", "EMC", DEFAULT_NMLFILE)
     os.environ["NMLFILE"] = NMLFILE
     os.environ["INI_FILE_NAME"] = INIFILE
@@ -314,6 +310,126 @@ def cleanup_ipc_files(endpoint):
             pass
 
 
+_STALE_SUBSTRINGS = [
+    "qtcnc-serverd",
+    "linuxcncsvr",
+    "milltask",
+    "linuxcnctask",
+    "motion-logger",
+]
+
+
+def _find_stale_pids():
+    """Walk `ps -A` output and collect pids whose command line looks like a
+    leftover qtcnc/LinuxCNC stack process. Excludes our own pid so we never
+    list ourselves.
+    """
+    own_pid = os.getpid()
+    pids = set()
+    try:
+        r = subprocess.run(
+            ["ps", "-A", "-o", "pid=,args="],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return pids
+    if r.returncode != 0:
+        return pids
+    for line in r.stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid == own_pid:
+            continue
+        cmdline = parts[1]
+        if any(needle in cmdline for needle in _STALE_SUBSTRINGS):
+            pids.add(pid)
+            continue
+        # qtcnc client: argv token ends in `/qtcnc`. Checking only the
+        # first two whitespace tokens keeps this from matching the string
+        # "qtcnc" anywhere in a longer argument (e.g. an INI path).
+        for token in cmdline.split()[:2]:
+            if token.endswith("/qtcnc"):
+                pids.add(pid)
+                break
+    return pids
+
+
+def _kill_pid_group(pid, sig):
+    """Signal the entire process group that `pid` belongs to. Refuses to
+    signal our own pgroup so we never suicide while cleaning up siblings.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    try:
+        own_pgid = os.getpgrp()
+    except OSError:
+        own_pgid = -1
+    if pgid == own_pgid:
+        return
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def cleanup_session(endpoint):
+    """Kill leftover processes from a previous qtcnc session and clean the
+    filesystem state that would otherwise block a fresh launch.
+
+    Enumerates stale `qtcnc-serverd`, `linuxcncsvr`, `milltask`,
+    `linuxcnctask`, `motion-logger`, and `qtcnc` client processes via
+    `ps -A`, SIGTERMs their process groups, escalates to SIGKILL after a
+    grace period, then unloads HAL, stops realtime, removes NML
+    shared-memory segments, removes stale ZMQ IPC files, and removes the
+    lockfile. Called up front on every launch.
+    """
+    pids = _find_stale_pids()
+
+    if pids:
+        log(f"qtcnc-launch: cleaning up leftover session "
+            f"({len(pids)} stale pid{'s' if len(pids) != 1 else ''})")
+        for pid in pids:
+            _kill_pid_group(pid, signal.SIGTERM)
+        time.sleep(0.5)
+        for pid in pids:
+            _kill_pid_group(pid, signal.SIGKILL)
+
+    try:
+        subprocess.run(HALCMD + ["stop"], capture_output=True, timeout=5.0)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    try:
+        subprocess.run(HALCMD + ["unload", "all"],
+                       capture_output=True, timeout=5.0)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    try:
+        subprocess.run([REALTIME, "stop"], capture_output=True, timeout=5.0)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    if os.path.isfile(DEFAULT_NMLFILE):
+        for shmkey in parse_nml_shmkeys(DEFAULT_NMLFILE):
+            try:
+                subprocess.run(["ipcrm", "-M", shmkey], capture_output=True)
+            except FileNotFoundError:
+                pass
+
+    cleanup_ipc_files(endpoint)
+
+    try:
+        os.remove(LOCKFILE)
+    except OSError:
+        pass
+
+
 def _signal_handler(signum, frame):
     """Signal handler: NEVER call wait() here. The main thread is blocked
     in a Popen.wait() and Popen has a per-instance _waitpid_lock; calling
@@ -369,6 +485,8 @@ def main():
         os.chdir(ini_dir)
     except OSError as e:
         die(f"cannot chdir to {ini_dir}: {e}")
+
+    cleanup_session(endpoint)
 
     try:
         bring_up_stack()

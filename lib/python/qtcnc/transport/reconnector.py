@@ -25,7 +25,7 @@ created on (typically the Qt main thread). `QTimer` does the scheduling;
 no background threads. Transport calls (`ping`, `reopen`, `hello`,
 `get_snapshot`) are blocking, but on a healthy local IPC link they
 return in microseconds. On TCP they could block the GUI for a round
-trip — documented risk in the v2 plan, revisit if it bites.
+trip; revisit if it bites.
 
 The Reconnector does NOT directly fire `Status.connected/disconnected`.
 It emits `state_changed` and `Status.attach_reconnector(self)` wires the

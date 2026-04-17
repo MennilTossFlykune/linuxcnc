@@ -77,13 +77,13 @@ class _FakeHandler:
 
     def on_exec_command(self, verb: CommandVerb, kwargs: dict[str, Any]) -> None:
         self.commands.append((verb, dict(kwargs)))
-        if verb == CommandVerb.ESTOP_RESET:
+        if verb == CommandVerb.STATE_ESTOP_RESET:
             self._state = replace(
                 self._state,
                 machine=replace(self._state.machine, estop=False),
                 task_state=TaskState.ESTOP_RESET,
             )
-        elif verb == CommandVerb.POWER_ON:
+        elif verb == CommandVerb.STATE_ON:
             if self._state.machine.estop:
                 raise NackError("cannot power on while estopped")
             self._state = replace(
@@ -257,11 +257,11 @@ class TestGetSnapshot:
 
 
 class TestExecCommand:
-    def test_estop_reset_round_trip(self, transport_pair):
+    def test_state_estop_reset_round_trip(self, transport_pair):
         client, _, handler = transport_pair
         client.hello()
-        client.exec_command(CommandVerb.ESTOP_RESET)
-        assert handler.commands[-1][0] == CommandVerb.ESTOP_RESET
+        client.exec_command(CommandVerb.STATE_ESTOP_RESET)
+        assert handler.commands[-1][0] == CommandVerb.STATE_ESTOP_RESET
         snap = client.get_snapshot()
         assert snap.machine.estop is False
 
@@ -278,7 +278,7 @@ class TestExecCommand:
         client, _, _ = transport_pair
         client.hello()
         with pytest.raises(NackError) as exc:
-            client.exec_command(CommandVerb.POWER_ON)
+            client.exec_command(CommandVerb.STATE_ON)
         assert "estopped" in exc.value.reason
 
     def test_nack_on_unknown_verb(self, transport_pair):

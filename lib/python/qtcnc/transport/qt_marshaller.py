@@ -138,6 +138,18 @@ class QtMarshalledTransport(Transport):
     def subscribe_pin(self, name: str) -> None:
         return self._inner.subscribe_pin(name)
 
+    def get_tool_db(self):
+        return self._inner.get_tool_db()
+
+    def add_tool(self, tool_id: int, pocket: int, **fields):
+        return self._inner.add_tool(tool_id, pocket, **fields)
+
+    def remove_tool(self, tool_id: int):
+        return self._inner.remove_tool(tool_id)
+
+    def update_tool(self, tool_id: int, **fields):
+        return self._inner.update_tool(tool_id, **fields)
+
     def ping(self, nonce: int | None = None) -> dict[str, Any]:
         return self._inner.ping(nonce)
 

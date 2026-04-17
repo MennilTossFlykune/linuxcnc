@@ -23,11 +23,117 @@ Public API:
 
 from __future__ import annotations
 
+import atexit
+import ctypes
 import math
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 
 from qtcnc.core.types import Position
+
+
+# The `gcode` C extension links against `libtooldata.so`, whose
+# `tooldata_find_index_for_tool()` dereferences a process-local
+# `tool_mmap_base` pointer that is NULL until either `tool_mmap_user()`
+# or `tool_mmap_creator()` has been called in the current process.
+# Any g-code with a T word hits `convert_tool_select` ->
+# `find_tool_index` -> `tooldata_find_index_for_tool` -> segfault.
+#
+# AXIS gets around this because it imports `linuxcnc`, and
+# `linuxcnc.stat().poll()` calls `tool_mmap_user()` on the first poll
+# (see src/emc/usr_intf/axis/extensions/emcmodule.cc). qtcnc's client
+# deliberately does NOT import `linuxcnc` -- the whole point of the
+# daemon split -- so we have to initialise the mmap ourselves.
+#
+# The mmap must be populated with dummy entries for all 1000 pockets
+# so that M6 tool changes succeed during preview parsing. The C
+# interpreter checks the mmap via tooldata_find_index_for_tool()
+# during M6 processing — if the tool isn't found, M6 fails before
+# the change_tool callback fires on the recorder.
+_tool_mmap_ready = False
+
+_CANON_POCKETS_MAX = 1001
+
+
+class _PmCartesian(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_double),
+        ("y", ctypes.c_double),
+        ("z", ctypes.c_double),
+    ]
+
+
+class _EmcPose(ctypes.Structure):
+    _fields_ = [
+        ("tran", _PmCartesian),
+        ("a", ctypes.c_double),
+        ("b", ctypes.c_double),
+        ("c", ctypes.c_double),
+        ("u", ctypes.c_double),
+        ("v", ctypes.c_double),
+        ("w", ctypes.c_double),
+    ]
+
+
+class _CanonToolTable(ctypes.Structure):
+    _fields_ = [
+        ("toolno", ctypes.c_int),
+        ("pocketno", ctypes.c_int),
+        ("offset", _EmcPose),
+        ("diameter", ctypes.c_double),
+        ("frontangle", ctypes.c_double),
+        ("backangle", ctypes.c_double),
+        ("orientation", ctypes.c_int),
+        ("comment", ctypes.c_char * 40),
+    ]
+
+
+def _ensure_tool_mmap() -> None:
+    """Create a sandbox tool mmap populated with dummy entries.
+
+    Always creates an isolated mmap under a tempdir (never attaches
+    to a running LinuxCNC's shared mmap) and fills every pocket 1-1000
+    with a dummy tool entry so tooldata_find_index_for_tool() succeeds
+    for any tool number during preview parsing.
+    """
+    global _tool_mmap_ready
+    if _tool_mmap_ready:
+        return
+    try:
+        lib = ctypes.CDLL("libtooldata.so.0", mode=ctypes.RTLD_GLOBAL)
+    except OSError as e:
+        raise GcodeParseError(
+            "", -1, -1, f"libtooldata.so.0 not found: {e}"
+        ) from e
+    lib.tool_mmap_creator.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.tool_mmap_creator.restype = ctypes.c_int
+    lib.tooldata_put.argtypes = [_CanonToolTable, ctypes.c_int]
+    lib.tooldata_put.restype = ctypes.c_int
+
+    sandbox = tempfile.mkdtemp(prefix="qtcnc-tool-")
+    atexit.register(shutil.rmtree, sandbox, ignore_errors=True)
+    old_home = os.environ.get("HOME")
+    os.environ["HOME"] = sandbox
+    try:
+        rc = lib.tool_mmap_creator(None, 0)
+    finally:
+        if old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = old_home
+    if rc != 0:
+        raise GcodeParseError("", int(rc), -1, "tool_mmap_creator failed")
+
+    for idx in range(1, _CANON_POCKETS_MAX):
+        entry = _CanonToolTable()
+        entry.toolno = idx
+        entry.pocketno = idx
+        lib.tooldata_put(entry, idx)
+
+    _tool_mmap_ready = True
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +176,10 @@ class GcodeProgram:
     `line_index[n]` gives the indices into `segments` for the segments
     emitted on source line `n`. Empty list for lines that emitted no
     motion (comments, m-codes, dwells, etc.).
+
+    `requested_tools` is the set of tool numbers the program's M6
+    tool changes referenced during parsing. Callers can diff this
+    against the tool database to detect missing tools.
     """
 
     path: str
@@ -78,6 +188,7 @@ class GcodeProgram:
     line_index: dict[int, list[int]] = field(default_factory=dict)
     line_count: int = 0
     units: str = "mm"
+    requested_tools: frozenset[int] = field(default_factory=frozenset)
 
     def segments_on_line(self, line: int) -> list[ToolpathSegment]:
         return [self.segments[i] for i in self.line_index.get(line, ())]
@@ -139,9 +250,9 @@ class _CanonRecorder:
     # The C interp accesses `parameter_file` as a plain attribute (not a
     # method) via PyObject_GetAttrString. If it's missing, the Python
     # AttributeError is left set and the very next callmethod returns
-    # NULL even though the canon method itself is fine — that's the
-    # bug that took us 30 minutes the first time. Empty string means
-    # "no parameter file" and the interp handles that cleanly.
+    # NULL. Empty string causes a link() segfault inside Interp::init().
+    # `parse()` overrides this with a real tempfile path before calling
+    # gcode.parse().
     parameter_file: str = ""
 
     # Default offset + plane values, per `Translated` / `ArcsToSegmentsMixin`.
@@ -159,7 +270,11 @@ class _CanonRecorder:
     plane = 1
     arcdivision = 64
 
-    def __init__(self, units: str = "mm") -> None:
+    def __init__(
+        self,
+        units: str = "mm",
+        tool_table: dict[int, tuple] | None = None,
+    ) -> None:
         self._segments: list[ToolpathSegment] = []
         self._line_index: dict[int, list[int]] = {}
         # `lo` is the last machine-coordinate position in canonical (inch)
@@ -181,6 +296,8 @@ class _CanonRecorder:
         # Rolling axis-aligned bounding box in DISPLAY units (already scaled).
         self._min = [math.inf] * 9
         self._max = [-math.inf] * 9
+        self._tool_table = tool_table or {}
+        self._requested_tools: set[int] = set()
 
     # ----- public accessors -----
 
@@ -191,6 +308,10 @@ class _CanonRecorder:
     @property
     def line_index(self) -> dict[int, list[int]]:
         return self._line_index
+
+    @property
+    def requested_tools(self) -> frozenset[int]:
+        return frozenset(self._requested_tools)
 
     def extents(self) -> ToolpathExtents:
         if not self._segments:
@@ -366,10 +487,15 @@ class _CanonRecorder:
     ) -> None:
         self._tool_offset = (xo, yo, zo, ao, bo, co, uo, vo, wo)
 
-    def change_tool(self, _tool_nr: int) -> None:
-        pass
+    def change_tool(self, tool_nr: int) -> None:
+        if tool_nr > 0:
+            self._requested_tools.add(tool_nr)
 
-    def get_tool(self, _pocket: int):
+    def get_tool(self, pocket: int):
+        if pocket in self._tool_table:
+            return self._tool_table[pocket]
+        if pocket > 0:
+            return (pocket, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
         return _EMPTY_TOOL
 
     def get_block_delete(self) -> int:
@@ -510,8 +636,20 @@ def parse(
     *,
     units: str = "mm",
     initcode: Optional[str] = None,
+    tool_table: dict[int, tuple] | None = None,
+    lenient: bool = False,
 ) -> GcodeProgram:
     """Parse a g-code file and return a `GcodeProgram`.
+
+    When `tool_table` is provided, the preview uses real tool geometry
+    (correct diameters, Z offsets). Missing tools get zero offsets.
+    The returned `GcodeProgram.requested_tools` records every pocket
+    the program referenced during parsing.
+
+    When `lenient` is True, interpreter errors (e.g. tool changes for
+    tools missing from the mmap) produce a partial result instead of
+    raising GcodeParseError. Callers that only need `requested_tools`
+    should pass `lenient=True`.
 
     Imports the `gcode` C extension lazily so this module can be
     imported (e.g. by Designer registering widgets) on hosts that
@@ -519,7 +657,19 @@ def parse(
     """
     import gcode  # type: ignore[import-not-found]
 
-    recorder = _CanonRecorder(units=units)
+    _ensure_tool_mmap()
+    recorder = _CanonRecorder(units=units, tool_table=tool_table)
+    # The C interp's init() opens recorder.parameter_file as a writable
+    # variable file (rs274ngc.var-style). An empty string segfaults — it
+    # tries link()/rename() against an empty path and the failure is not
+    # handled cleanly. Mirror AXIS (axis.py:1251-1255): give it a real,
+    # writable temp file. We don't care about the variables it persists
+    # for preview parsing, so it's discarded after parse().
+    tmp_var = tempfile.NamedTemporaryFile(
+        mode="w", prefix="qtcnc-vars-", suffix=".var", delete=False,
+    )
+    tmp_var.close()
+    recorder.parameter_file = tmp_var.name
     # gcode.parse signature: (filename, callback[, unitcode, initcode, interpname]).
     # We pass `initcode` (a single line of g-code prepended to the file)
     # to force the interpreter into millimeter-or-inch mode regardless
@@ -528,8 +678,15 @@ def parse(
     try:
         result, last_seq = gcode.parse(path, recorder, "", unit_init)
     except Exception as e:
-        raise GcodeParseError(path, -1, -1, str(e)) from e
-    if result > _PARSE_ERROR_THRESHOLD:
+        if not lenient:
+            raise GcodeParseError(path, -1, -1, str(e)) from e
+        result, last_seq = -1, -1
+    finally:
+        try:
+            os.unlink(tmp_var.name)
+        except OSError:
+            pass
+    if result > _PARSE_ERROR_THRESHOLD and not lenient:
         raise GcodeParseError(path, int(result), int(last_seq))
 
     # Count source lines for the line_count field. Cheap; the file is
@@ -549,4 +706,5 @@ def parse(
         line_index=dict(recorder.line_index),
         line_count=line_count,
         units=units,
+        requested_tools=recorder.requested_tools,
     )

@@ -48,6 +48,8 @@ class SignalRecorder:
         self._track("motion_type_changed", status.motion_type_changed, 1)
         self._track("homed_changed", status.homed_changed, 2)
         self._track("all_homed_changed", status.all_homed_changed, 1)
+        self._track("homing_changed", status.homing_changed, 2)
+        self._track("any_homing_changed", status.any_homing_changed, 1)
         self._track("machine_state_changed", status.machine_state_changed, 1)
         self._track("position_changed", status.position_changed, 1)
         self._track("machine_position_changed", status.machine_position_changed, 1)
@@ -138,27 +140,27 @@ class TestBootstrap:
 
 
 class TestMachineSignals:
-    def test_estop_reset_fires_estop_changed(self, setup):
+    def test_state_estop_reset_fires_estop_changed(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
         assert rec.got("estop_changed") == [(False,)]
         assert len(rec.got("machine_state_changed")) == 1
         assert len(rec.got("task_state_changed")) == 1
 
-    def test_power_on_fires_power_changed(self, setup):
+    def test_state_on_fires_power_changed(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.ESTOP_RESET)
-        t.exec_command(CommandVerb.POWER_ON)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ON)
         assert rec.got("power_changed") == [(True,)]
 
-    def test_home_axis_fires_per_axis(self, setup):
+    def test_home_fires_per_axis(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.HOME_AXIS, axis=1)
+        t.exec_command(CommandVerb.HOME, joint=1)
         assert rec.got("homed_changed") == [(1, True)]
 
     def test_home_all_fires_all_homed(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.HOME_ALL)
+        t.exec_command(CommandVerb.HOME, joint=-1)
         assert rec.got("all_homed_changed") == [(True,)]
         # Each of the three axes emits homed_changed(idx, True).
         assert len(rec.got("homed_changed")) == 3
@@ -167,6 +169,43 @@ class TestMachineSignals:
         t, s, rec = setup()
         t.exec_command(CommandVerb.SET_MODE, mode=TaskMode.AUTO)
         assert rec.got("task_mode_changed") == [(TaskMode.AUTO,)]
+
+    def test_homing_changed_fires_per_joint(self, setup):
+        from qtcnc.core.types import JointState
+        snap = StateStore(joints=(JointState(), JointState(), JointState()))
+        t, s, rec = setup(snapshot=snap)
+        joints = list(s.state.joints)
+        joints[1] = replace(joints[1], homing_state=1)
+        t.mutate_state(joints=tuple(joints))
+        assert rec.got("homing_changed") == [(1, True)]
+
+    def test_any_homing_changed_fires_on_transition(self, setup):
+        from qtcnc.core.types import JointState
+        snap = StateStore(joints=(JointState(), JointState(), JointState()))
+        t, s, rec = setup(snapshot=snap)
+        joints = list(s.state.joints)
+        joints[0] = replace(joints[0], homing_state=1)
+        t.mutate_state(joints=tuple(joints))
+        assert rec.got("any_homing_changed") == [(True,)]
+        # Finish homing
+        joints[0] = replace(joints[0], homing_state=0, homed=True)
+        t.mutate_state(joints=tuple(joints))
+        assert rec.got("any_homing_changed") == [(True,), (False,)]
+
+    def test_any_homing_not_fired_when_unchanged(self, setup):
+        from qtcnc.core.types import JointState
+        snap = StateStore(joints=(JointState(), JointState(), JointState()))
+        t, s, rec = setup(snapshot=snap)
+        joints = list(s.state.joints)
+        joints[0] = replace(joints[0], homing_state=1)
+        joints[1] = replace(joints[1], homing_state=1)
+        t.mutate_state(joints=tuple(joints))
+        assert rec.got("any_homing_changed") == [(True,)]
+        # One joint finishes but the other is still homing — no transition
+        joints[0] = replace(joints[0], homing_state=0, homed=True)
+        t.mutate_state(joints=tuple(joints))
+        assert rec.got("homing_changed") == [(0, True), (1, True), (0, False)]
+        assert rec.got("any_homing_changed") == [(True,)]
 
 
 class TestPositionSignals:
@@ -211,12 +250,12 @@ class TestFeedRapidOverrideSignals:
 
     def test_feed_override(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.SET_FEED_OVERRIDE, value=0.5)
+        t.exec_command(CommandVerb.FEEDRATE, value=0.5)
         assert rec.got("feed_override_changed") == [(0.5,)]
 
     def test_rapid_override(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.SET_RAPID_OVERRIDE, value=0.75)
+        t.exec_command(CommandVerb.RAPIDRATE, value=0.75)
         assert rec.got("rapid_override_changed") == [(0.75,)]
 
 
@@ -231,7 +270,7 @@ class TestSpindleSignals:
 
     def test_spindle_override(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.SET_SPINDLE_OVERRIDE, index=0, value=1.25)
+        t.exec_command(CommandVerb.SPINDLEOVERRIDE, index=0, value=1.25)
         assert rec.got("spindle_override_changed") == [(0, 1.25)]
 
 
@@ -249,15 +288,15 @@ class TestToolSignals:
 
 
 class TestProgramSignals:
-    def test_program_run_fires_program_started(self, setup):
+    def test_auto_run_fires_program_started(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.PROGRAM_RUN)
+        t.exec_command(CommandVerb.AUTO_RUN)
         assert len(rec.got("program_started")) == 1
 
-    def test_program_pause_fires_program_paused(self, setup):
+    def test_auto_pause_fires_program_paused(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.PROGRAM_RUN)
-        t.exec_command(CommandVerb.PROGRAM_PAUSE)
+        t.exec_command(CommandVerb.AUTO_RUN)
+        t.exec_command(CommandVerb.AUTO_PAUSE)
         assert len(rec.got("program_paused")) == 1
 
     def test_lifecycle_program_loading(self, setup):
@@ -272,6 +311,34 @@ class TestProgramSignals:
         events = rec.got("program_loaded")
         assert len(events) == 1
         assert events[0] == ("/tmp/f.ngc", prog)
+
+    def test_lifecycle_program_loaded_from_wire_dict(self, setup):
+        # Regression: over the wire the daemon's ProgramState is
+        # msgpack-serialized via to_wire() into a plain dict, so by the
+        # time it reaches `_on_lifecycle` the `program` key is a dict,
+        # not a dataclass. Slots on screen handlers expect attribute
+        # access (program.total_lines), so the coercion must happen in
+        # Status before the signal fires. MockTransport's
+        # inject_lifecycle bypasses codec, so we hand-roll the dict form
+        # here to mirror what the real ZMQ client hands to Status.
+        t, s, rec = setup()
+        wire_program = {
+            "path": "/tmp/f.ngc",
+            "total_lines": 20,
+            "current_line": 0,
+            "is_running": False,
+            "is_paused": False,
+        }
+        t.inject_lifecycle(
+            Lifecycle.PROGRAM_LOADED,
+            {"path": "/tmp/f.ngc", "program": wire_program},
+        )
+        events = rec.got("program_loaded")
+        assert len(events) == 1
+        path, prog = events[0]
+        assert path == "/tmp/f.ngc"
+        assert isinstance(prog, ProgramState)
+        assert prog.total_lines == 20
 
     def test_lifecycle_program_load_failed(self, setup):
         t, s, rec = setup()
@@ -396,7 +463,7 @@ class TestStatePropagation:
 
     def test_state_updates_after_exec_command(self, setup):
         t, s, rec = setup()
-        t.exec_command(CommandVerb.ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
         assert s.state.machine.estop is False
 
 

@@ -1,15 +1,13 @@
 """GcodeView: read-only text view of the currently loaded g-code program.
 
 Subscribes to `program_loaded` and shows the file contents in a
-`QPlainTextEdit`; subscribes to `program_line_changed` and highlights
-the current line with a background colour.
+`QPlainTextEdit`; subscribes to `motion_line_changed` and highlights
+the line being executed with a background colour.
 
-File access: in v1 / local operation, the daemon and client run on the
-same host, so the widget reads the file directly from disk. Remote
-operation (v2 / A5 track) will need a `GET_FILE(path)` REQ round-trip;
-`_load_file_bytes` is the single seam to change when that wiring goes
-in. For now it's a plain filesystem read with a 5 MB cap so a giant
-program can't freeze the GUI thread.
+File access: the widget reads the file directly from disk via
+`_load_file_bytes`, a single seam that swaps to a `GET_FILE(path)` REQ
+round-trip once remote operation lands. The disk read has a 5 MB cap
+so a giant program can't freeze the GUI thread.
 """
 
 from __future__ import annotations
@@ -50,15 +48,13 @@ class GcodeView(QtcncWidget, QPlainTextEdit):
 
     def qtcnc_setup(self) -> None:
         self.connect_status("program_loaded", self._on_program_loaded)
-        self.connect_status("program_line_changed", self._on_line_changed)
+        self.connect_status("motion_line_changed", self._on_line_changed)
         self.connect_status("program_closed", self._on_program_closed)
-        # Seed from current snapshot: the user may have arrived with a
-        # program already loaded (reconnect after a GUI restart).
         state = self.window().qtcnc_status.state
         if state.program.path:
             self._on_program_loaded(state.program.path, state.program)
-            if state.program.current_line > 0:
-                self.set_current_line(state.program.current_line)
+            if state.program.motion_line > 0:
+                self.set_current_line(state.program.motion_line)
 
     # ----- public API -----
 
@@ -137,9 +133,8 @@ class GcodeView(QtcncWidget, QPlainTextEdit):
         fmt = QTextBlockFormat()
         fmt.setBackground(_HIGHLIGHT_COLOR)
         cursor.setBlockFormat(fmt)
-        # Scroll the highlighted line into view without stealing focus.
         self.setTextCursor(cursor)
-        self.ensureCursorVisible()
+        self.centerCursor()
 
     def _clear_highlight(self) -> None:
         doc = self.document()

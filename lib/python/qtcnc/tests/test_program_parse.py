@@ -20,16 +20,78 @@ from pathlib import Path
 
 import pytest
 
-gcode = pytest.importorskip("gcode")  # noqa: F401  — guard the whole module
-
 from qtcnc.core.program import (
     GcodeParseError,
     GcodeProgram,
     ToolpathExtents,
     ToolpathSegment,
-    parse,
+    _CanonRecorder,
+    _EMPTY_TOOL,
 )
 from qtcnc.core.types import Position
+
+
+# -----------------------------------------------------------------------
+# Tests that exercise _CanonRecorder directly (no C module needed)
+# -----------------------------------------------------------------------
+
+
+class TestCanonRecorderToolTable:
+    def test_get_tool_returns_dummy_for_positive_pocket(self):
+        rec = _CanonRecorder()
+        result = rec.get_tool(5)
+        assert result[0] == 5
+        assert len(result) == 14
+
+    def test_get_tool_returns_empty_for_pocket_zero(self):
+        rec = _CanonRecorder()
+        result = rec.get_tool(0)
+        assert result == _EMPTY_TOOL
+
+    def test_get_tool_returns_entry_from_table(self):
+        tool_data = (5, 0.0, 0.0, -25.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0)
+        rec = _CanonRecorder(tool_table={5: tool_data})
+        result = rec.get_tool(5)
+        assert result == tool_data
+
+    def test_change_tool_tracks_requested(self):
+        rec = _CanonRecorder()
+        rec.change_tool(3)
+        rec.change_tool(7)
+        rec.change_tool(3)
+        assert rec.requested_tools == frozenset({3, 7})
+
+    def test_change_tool_ignores_zero(self):
+        rec = _CanonRecorder()
+        rec.change_tool(0)
+        assert rec.requested_tools == frozenset()
+
+    def test_get_tool_does_not_track(self):
+        rec = _CanonRecorder()
+        for pocket in range(1001):
+            rec.get_tool(pocket)
+        assert rec.requested_tools == frozenset()
+
+    def test_requested_tools_empty_initially(self):
+        rec = _CanonRecorder()
+        assert rec.requested_tools == frozenset()
+
+
+class TestGcodeProgramRequestedTools:
+    def test_default_is_empty_frozenset(self):
+        prog = GcodeProgram(
+            path="", segments=(), extents=ToolpathExtents(min=Position(), max=Position()),
+        )
+        assert prog.requested_tools == frozenset()
+
+
+# -----------------------------------------------------------------------
+# Tests that require the gcode C extension (skipped if unavailable)
+# -----------------------------------------------------------------------
+
+gcode_mod = pytest.importorskip("gcode")  # noqa: F401
+
+from qtcnc.core.program import parse  # noqa: E402
 
 
 def _write_program(tmp_path: Path, name: str, body: str) -> Path:
@@ -143,6 +205,11 @@ class TestParseEdgeCases:
         missing = tmp_path / "does-not-exist.ngc"
         with pytest.raises(GcodeParseError):
             parse(str(missing))
+
+    def test_missing_file_lenient_does_not_raise(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist.ngc"
+        program = parse(str(missing), lenient=True)
+        assert program.segments == ()
 
     def test_empty_program_has_empty_extents(self, tmp_path: Path) -> None:
         # A program with no motion at all (just M2) should parse cleanly

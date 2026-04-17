@@ -46,6 +46,10 @@ class ZmqServerHandler(Protocol):
     def on_declare_pins(self, specs: list[HalPinSpec]) -> DeclarePinsResult: ...
     def on_write_pin(self, name: str, value: Any) -> None: ...
     def on_subscribe_pin(self, name: str) -> None: ...
+    def on_get_tool_db(self) -> dict[str, Any]: ...
+    def on_add_tool(self, tool_id: int, pocket: int, fields: dict[str, Any]) -> None: ...
+    def on_remove_tool(self, tool_id: int) -> None: ...
+    def on_update_tool(self, tool_id: int, fields: dict[str, Any]) -> None: ...
 
 
 def _split_endpoint(base: str) -> tuple[str, str]:
@@ -274,6 +278,24 @@ class ZmqServerTransport:
                 return encode_envelope(MessageType.ACK, {})
             if msg_type == MessageType.SUBSCRIBE_PIN:
                 self._handler.on_subscribe_pin(payload["name"])
+                return encode_envelope(MessageType.ACK, {})
+            if msg_type == MessageType.GET_TOOL_DB:
+                result = self._handler.on_get_tool_db()
+                return encode_envelope(MessageType.ACK, to_wire(result))
+            if msg_type == MessageType.ADD_TOOL:
+                tool_id = int(payload.get("tool_id", 0))
+                pocket = int(payload.get("pocket", 0))
+                fields = {k: v for k, v in payload.items() if k not in ("tool_id", "pocket")}
+                self._handler.on_add_tool(tool_id, pocket, fields)
+                return encode_envelope(MessageType.ACK, {})
+            if msg_type == MessageType.REMOVE_TOOL:
+                tool_id = int(payload.get("tool_id", 0))
+                self._handler.on_remove_tool(tool_id)
+                return encode_envelope(MessageType.ACK, {})
+            if msg_type == MessageType.UPDATE_TOOL:
+                tool_id = int(payload.get("tool_id", 0))
+                fields = {k: v for k, v in payload.items() if k != "tool_id"}
+                self._handler.on_update_tool(tool_id, fields)
                 return encode_envelope(MessageType.ACK, {})
             if msg_type == MessageType.BYE:
                 return encode_envelope(MessageType.ACK, {})

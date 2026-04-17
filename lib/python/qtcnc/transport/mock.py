@@ -35,17 +35,32 @@ from qtcnc import PROTOCOL_VERSION
 from qtcnc.core.hal_spec import HalDir, HalPinSpec, HalType
 from qtcnc.core.state import StateStore, apply, diff
 from qtcnc.core.types import (
+    AxisState,
+    CoolantState,
     ErrorMessage,
+    ExecState,
+    GetToolDbResult,
+    InterpSettings,
     InterpState,
+    IoState,
+    JointState,
+    LinearUnits,
     MachineState,
+    MotionMode,
+    Offsets,
     Overrides,
     Position,
+    ProbeState,
     ProgramState,
+    ProgramUnits,
     SpindleDir,
     SpindleState,
+    TaskInfo,
     TaskMode,
     TaskState,
     Tool,
+    ToolDbEntry,
+    ToolEntry,
 )
 from qtcnc.signals import CommandVerb
 from qtcnc.transport.base import (
@@ -77,20 +92,93 @@ def _plausible_snapshot() -> StateStore:
             interp_state=InterpState.IDLE,
             homed=(False, False, False),
             axis_count=3,
+            linear_units=LinearUnits.MM,
+            axis_mask=0b111,
+            joint_count=3,
+            spindle_count=1,
+            cycle_time=0.01,
+            linear_units_per_mm=1.0,
+            angular_units_per_deg=1.0,
+            kinematics_type=1,
+            motion_enabled=False,
+            inpos=True,
+            coordinates=("X", "Y", "Z"),
         ),
         position=Position(),
         machine_position=Position(),
         dtg=Position(),
-        program=ProgramState(),
+        program=ProgramState(program_units=ProgramUnits.MM),
         tool=Tool(),
         tool_in_spindle=0,
         spindles=(SpindleState(index=0),),
-        overrides=Overrides(feed=1.0, rapid=1.0, spindles=(1.0,)),
+        overrides=Overrides(
+            feed=1.0,
+            rapid=1.0,
+            spindles=(1.0,),
+            max_velocity=5000.0,
+            feed_enabled=True,
+            adaptive_enabled=False,
+            hold_enabled=True,
+        ),
         feed_rate=0.0,
         rapid_rate=0.0,
         active_gcodes=(20, 90, 17, 40, 49, 54, 64, 97),
         active_mcodes=(5, 9),
+        task_info=TaskInfo(
+            exec_state=ExecState.DONE,
+            ini_filename="<mock>",
+        ),
+        offsets=Offsets(g5x_index=1),
+        active_settings=InterpSettings(),
+        joints=tuple(JointState() for _ in range(3)),
+        axes=tuple(AxisState() for _ in range(3)),
+        tool_table=(),
+        coolant=CoolantState(),
+        probe=ProbeState(),
+        io=IoState(
+            digital_in=(False,) * 8,
+            digital_out=(False,) * 8,
+            analog_in=(0.0,) * 8,
+            analog_out=(0.0,) * 8,
+            misc_error=(0,) * 10,
+        ),
+        commanded_position=Position(),
+        heartbeat=0,
+        taskbeat=0,
     )
+
+
+_NON_MUTATING_VERBS: frozenset[CommandVerb] = frozenset({
+    CommandVerb.JOG_CONTINUOUS,
+    CommandVerb.JOG_STOP,
+    CommandVerb.JOG_INCREMENT,
+    CommandVerb.MDI,
+    CommandVerb.AUTO_STEP,
+    CommandVerb.MIST_ON,
+    CommandVerb.MIST_OFF,
+    CommandVerb.FLOOD_ON,
+    CommandVerb.FLOOD_OFF,
+    CommandVerb.DEBUG,
+    CommandVerb.MAXVEL,
+    CommandVerb.TOOL_OFFSET,
+    CommandVerb.LOAD_TOOL_TABLE,
+    CommandVerb.TASK_PLAN_SYNCH,
+    CommandVerb.OVERRIDE_LIMITS,
+    CommandVerb.RESET_INTERPRETER,
+    CommandVerb.AUTO_REVERSE,
+    CommandVerb.AUTO_FORWARD,
+    CommandVerb.SET_MIN_LIMIT,
+    CommandVerb.SET_MAX_LIMIT,
+    CommandVerb.SET_SPINDLE_OVERRIDE,
+    CommandVerb.SET_ADAPTIVE_FEED,
+    CommandVerb.SET_ANALOG_OUTPUT,
+    CommandVerb.ERROR_MSG,
+    CommandVerb.TEXT_MSG,
+    CommandVerb.DISPLAY_MSG,
+    CommandVerb.SPINDLE_INCREASE,
+    CommandVerb.SPINDLE_DECREASE,
+    CommandVerb.SPINDLE_CONSTANT,
+})
 
 
 class MockTransport(Transport):
@@ -112,6 +200,13 @@ class MockTransport(Transport):
         # When non-empty, ping() raises TransportError(self._ping_failure)
         # so reconnector tests can simulate a stalled daemon.
         self._ping_failure: str = ""
+        # In-memory tool database for mock mode.
+        self._tool_db: list[ToolDbEntry] = [
+            ToolDbEntry(tool_id=1, pocket=1, z_offset=-25.4, diameter=6.0, comment="6mm endmill"),
+            ToolDbEntry(tool_id=2, pocket=2, z_offset=-30.0, diameter=10.0, comment="10mm endmill"),
+        ]
+        self._random_toolchanger: bool = False
+        self._spindle_tool_id: int = 0
 
     # --- Transport ABC ---
 
@@ -197,6 +292,37 @@ class MockTransport(Transport):
         self._check_open()
         self._subscribed.add(name)
 
+    def get_tool_db(self) -> GetToolDbResult:
+        self._check_open()
+        return GetToolDbResult(
+            tools=tuple(self._tool_db),
+            spindle_tool_id=self._spindle_tool_id,
+            random_toolchanger=self._random_toolchanger,
+        )
+
+    def add_tool(self, tool_id: int, pocket: int, **fields: Any) -> None:
+        self._check_open()
+        for entry in self._tool_db:
+            if entry.tool_id == tool_id:
+                raise NackError(f"tool {tool_id} already exists")
+        self._tool_db.append(ToolDbEntry(tool_id=tool_id, pocket=pocket, **fields))
+        self._tool_db.sort(key=lambda e: e.tool_id)
+
+    def remove_tool(self, tool_id: int) -> None:
+        self._check_open()
+        self._tool_db = [e for e in self._tool_db if e.tool_id != tool_id]
+
+    def update_tool(self, tool_id: int, **fields: Any) -> None:
+        self._check_open()
+        for i, entry in enumerate(self._tool_db):
+            if entry.tool_id == tool_id:
+                update = {k: v for k, v in fields.items()
+                          if hasattr(entry, k) and k != "tool_id"}
+                from dataclasses import replace as _replace
+                self._tool_db[i] = _replace(entry, **update)
+                return
+        raise NackError(f"tool {tool_id} not found")
+
     def close(self) -> None:
         if self._closed:
             return
@@ -211,19 +337,19 @@ class MockTransport(Transport):
 
     def _apply_command(self, verb: CommandVerb, kwargs: dict[str, Any]) -> StateStore:
         s = self._state
-        if verb == CommandVerb.ESTOP:
+        if verb == CommandVerb.STATE_ESTOP:
             return replace(
                 s,
                 machine=replace(s.machine, estop=True, powered=False),
                 task_state=TaskState.ESTOP,
             )
-        if verb == CommandVerb.ESTOP_RESET:
+        if verb == CommandVerb.STATE_ESTOP_RESET:
             return replace(
                 s,
                 machine=replace(s.machine, estop=False),
                 task_state=TaskState.ESTOP_RESET,
             )
-        if verb == CommandVerb.POWER_ON:
+        if verb == CommandVerb.STATE_ON:
             if s.machine.estop:
                 raise NackError("cannot power on while estopped")
             return replace(
@@ -231,7 +357,7 @@ class MockTransport(Transport):
                 machine=replace(s.machine, powered=True),
                 task_state=TaskState.ON,
             )
-        if verb == CommandVerb.POWER_OFF:
+        if verb == CommandVerb.STATE_OFF:
             return replace(
                 s,
                 machine=replace(s.machine, powered=False),
@@ -242,25 +368,47 @@ class MockTransport(Transport):
             if not isinstance(mode, TaskMode):
                 raise NackError(f"set_mode requires mode=TaskMode, got {mode!r}")
             return replace(s, machine=replace(s.machine, task_mode=mode))
-        if verb == CommandVerb.HOME_AXIS:
-            axis = int(kwargs.get("axis", -1))
-            return replace(s, machine=replace(s.machine, homed=_set_homed(s.machine.homed, axis, True)))
-        if verb == CommandVerb.UNHOME_AXIS:
-            axis = int(kwargs.get("axis", -1))
-            return replace(s, machine=replace(s.machine, homed=_set_homed(s.machine.homed, axis, False)))
-        if verb == CommandVerb.HOME_ALL:
+        if verb == CommandVerb.HOME:
+            joint = int(kwargs.get("joint", -1))
+            if joint < 0:
+                return replace(
+                    s,
+                    machine=replace(
+                        s.machine,
+                        homed=tuple(True for _ in range(s.machine.axis_count)),
+                    ),
+                )
             return replace(
                 s,
                 machine=replace(
-                    s.machine,
-                    homed=tuple(True for _ in range(s.machine.axis_count)),
+                    s.machine, homed=_set_homed(s.machine.homed, joint, True),
                 ),
             )
-        if verb == CommandVerb.SET_FEED_OVERRIDE:
-            return replace(s, overrides=replace(s.overrides, feed=float(kwargs["value"])))
-        if verb == CommandVerb.SET_RAPID_OVERRIDE:
-            return replace(s, overrides=replace(s.overrides, rapid=float(kwargs["value"])))
-        if verb == CommandVerb.SET_SPINDLE_OVERRIDE:
+        if verb == CommandVerb.UNHOME:
+            joint = int(kwargs.get("joint", -1))
+            if joint < 0:
+                return replace(
+                    s,
+                    machine=replace(
+                        s.machine,
+                        homed=tuple(False for _ in range(s.machine.axis_count)),
+                    ),
+                )
+            return replace(
+                s,
+                machine=replace(
+                    s.machine, homed=_set_homed(s.machine.homed, joint, False),
+                ),
+            )
+        if verb == CommandVerb.FEEDRATE:
+            return replace(
+                s, overrides=replace(s.overrides, feed=float(kwargs["value"])),
+            )
+        if verb == CommandVerb.RAPIDRATE:
+            return replace(
+                s, overrides=replace(s.overrides, rapid=float(kwargs["value"])),
+            )
+        if verb == CommandVerb.SPINDLEOVERRIDE:
             idx = int(kwargs.get("index", 0))
             value = float(kwargs["value"])
             new_sp = list(s.overrides.spindles)
@@ -268,11 +416,11 @@ class MockTransport(Transport):
                 new_sp.append(1.0)
             new_sp[idx] = value
             return replace(s, overrides=replace(s.overrides, spindles=tuple(new_sp)))
-        if verb in (CommandVerb.PROGRAM_RUN, CommandVerb.PROGRAM_RESUME):
+        if verb in (CommandVerb.AUTO_RUN, CommandVerb.AUTO_RESUME):
             return replace(s, program=replace(s.program, is_running=True, is_paused=False))
-        if verb == CommandVerb.PROGRAM_PAUSE:
+        if verb == CommandVerb.AUTO_PAUSE:
             return replace(s, program=replace(s.program, is_paused=True))
-        if verb == CommandVerb.PROGRAM_STOP:
+        if verb == CommandVerb.ABORT:
             return replace(s, program=replace(s.program, is_running=False, is_paused=False))
         if verb == CommandVerb.SPINDLE_FORWARD:
             idx = int(kwargs.get("index", 0))
@@ -286,18 +434,59 @@ class MockTransport(Transport):
                 s.spindles, idx, direction=SpindleDir.REVERSE, enabled=True,
                 speed=float(kwargs.get("speed", 0.0)),
             ))
-        if verb == CommandVerb.SPINDLE_STOP:
+        if verb == CommandVerb.SPINDLE_OFF:
             idx = int(kwargs.get("index", 0))
             return replace(s, spindles=_set_spindle(
                 s.spindles, idx, direction=SpindleDir.STOP, enabled=False, speed=0.0,
             ))
-        if verb in (
-            CommandVerb.JOG_START, CommandVerb.JOG_STOP, CommandVerb.JOG_INCREMENT,
-            CommandVerb.MDI, CommandVerb.PROGRAM_STEP,
-            CommandVerb.MIST_ON, CommandVerb.MIST_OFF,
-            CommandVerb.FLOOD_ON, CommandVerb.FLOOD_OFF,
-        ):
-            # Accepted but no state mutation in the mock.
+        if verb == CommandVerb.TRAJ_MODE:
+            mode = kwargs.get("mode")
+            if not isinstance(mode, MotionMode):
+                raise NackError(f"traj_mode requires MotionMode, got {mode!r}")
+            return replace(s, machine=replace(s.machine, motion_mode=mode))
+        if verb == CommandVerb.BRAKE_ENGAGE:
+            idx = int(kwargs.get("index", 0))
+            return replace(s, spindles=_set_spindle_brake(s.spindles, idx, True))
+        if verb == CommandVerb.BRAKE_RELEASE:
+            idx = int(kwargs.get("index", 0))
+            return replace(s, spindles=_set_spindle_brake(s.spindles, idx, False))
+        if verb == CommandVerb.SET_FEED_OVERRIDE:
+            return replace(
+                s, overrides=replace(
+                    s.overrides, feed_enabled=bool(kwargs.get("enabled", True)),
+                ),
+            )
+        if verb == CommandVerb.SET_FEED_HOLD:
+            return replace(
+                s, overrides=replace(
+                    s.overrides, hold_enabled=bool(kwargs.get("enabled", True)),
+                ),
+            )
+        if verb == CommandVerb.SET_OPTIONAL_STOP:
+            return replace(
+                s, task_info=replace(
+                    s.task_info, optional_stop=bool(kwargs.get("enabled", False)),
+                ),
+            )
+        if verb == CommandVerb.SET_BLOCK_DELETE:
+            return replace(
+                s, task_info=replace(
+                    s.task_info, block_delete=bool(kwargs.get("enabled", False)),
+                ),
+            )
+        if verb == CommandVerb.SET_DIGITAL_OUTPUT:
+            idx = int(kwargs.get("index", 0))
+            value = bool(kwargs.get("value", False))
+            new_out = list(s.io.digital_out)
+            while len(new_out) <= idx:
+                new_out.append(False)
+            new_out[idx] = value
+            return replace(s, io=replace(s.io, digital_out=tuple(new_out)))
+        if verb == CommandVerb.SET_PROGRAM_TOOLS:
+            raw = kwargs.get("tools", ())
+            tools = frozenset(int(t) for t in raw if int(t) > 0)
+            return replace(s, program=replace(s.program, requested_tools=tools))
+        if verb in _NON_MUTATING_VERBS:
             return s
         raise NackError(f"unsupported verb: {verb}")
 
@@ -381,4 +570,14 @@ def _set_spindle(
     new[idx] = replace(
         new[idx], direction=direction, enabled=enabled, speed=speed,
     )
+    return tuple(new)
+
+
+def _set_spindle_brake(
+    spindles: tuple[SpindleState, ...], idx: int, engaged: bool,
+) -> tuple[SpindleState, ...]:
+    new = list(spindles)
+    while len(new) <= idx:
+        new.append(SpindleState(index=len(new)))
+    new[idx] = replace(new[idx], brake=engaged)
     return tuple(new)

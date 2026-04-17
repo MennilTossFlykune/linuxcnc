@@ -41,18 +41,27 @@
       <property name="styleSheet">
        <string notr="true">font-size: 22px; padding: 8px; background: #222; color: #eee; border-radius: 6px;</string>
       </property>
+      <property name="state" stdset="0">
+       <string>task_state</string>
+      </property>
      </widget>
     </item>
     <item>
-     <widget class="DroWidget" name="dro_x">
+     <widget class="StateLabel" name="dro_x">
       <property name="text">
-       <string>X: 0.0000</string>
+       <string>X:    0.000</string>
       </property>
       <property name="alignment">
        <set>Qt::AlignCenter</set>
       </property>
       <property name="styleSheet">
        <string notr="true">font-family: monospace; font-size: 36px; padding: 16px; background: #000; color: #0f0; border-radius: 8px;</string>
+      </property>
+      <property name="state" stdset="0">
+       <string>dro_work</string>
+      </property>
+      <property name="axis" stdset="0">
+       <number>0</number>
       </property>
      </widget>
     </item>
@@ -62,7 +71,7 @@
        <number>12</number>
       </property>
       <item>
-       <widget class="EstopButton" name="estop_btn">
+       <widget class="ActionButton" name="estop_btn">
         <property name="text">
          <string>ESTOP</string>
         </property>
@@ -75,10 +84,13 @@
         <property name="styleSheet">
          <string notr="true">font-size: 18px; font-weight: bold;</string>
         </property>
+        <property name="action" stdset="0">
+         <string>estop</string>
+        </property>
        </widget>
       </item>
       <item>
-       <widget class="MachinePowerButton" name="power_btn">
+       <widget class="ActionButton" name="power_btn">
         <property name="text">
          <string>MACHINE ON</string>
         </property>
@@ -90,6 +102,9 @@
         </property>
         <property name="styleSheet">
          <string notr="true">font-size: 18px; font-weight: bold;</string>
+        </property>
+        <property name="action" stdset="0">
+         <string>power</string>
         </property>
        </widget>
       </item>
@@ -108,29 +123,40 @@
       </property>
      </spacer>
     </item>
+    <item>
+     <widget class="MessageStatusBar" name="message_status_bar">
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>24</height>
+       </size>
+      </property>
+      <property name="maximumSize">
+       <size>
+        <width>16777215</width>
+        <height>28</height>
+       </size>
+      </property>
+     </widget>
+    </item>
    </layout>
   </widget>
  </widget>
  <customwidgets>
   <customwidget>
-   <class>EstopButton</class>
+   <class>ActionButton</class>
    <extends>QPushButton</extends>
-   <header>qtcnc.widgets.common.estop_button</header>
-  </customwidget>
-  <customwidget>
-   <class>MachinePowerButton</class>
-   <extends>QPushButton</extends>
-   <header>qtcnc.widgets.common.machine_power_button</header>
-  </customwidget>
-  <customwidget>
-   <class>DroWidget</class>
-   <extends>QLabel</extends>
-   <header>qtcnc.widgets.common.dro</header>
+   <header>qtcnc.widgets.common.action_button</header>
   </customwidget>
   <customwidget>
    <class>StateLabel</class>
    <extends>QLabel</extends>
    <header>qtcnc.widgets.common.state_label</header>
+  </customwidget>
+  <customwidget>
+   <class>MessageStatusBar</class>
+   <extends>QFrame</extends>
+   <header>qtcnc.widgets.common.message_status_bar</header>
   </customwidget>
  </customwidgets>
  <resources/>

@@ -1,6 +1,6 @@
-"""Tests for A1: baseline snapshot re-publish + tunable HWM + drop counter.
+"""Tests for baseline snapshot re-publish, tunable HWM, and drop counter.
 
-Covers three behaviours introduced in v2 A1:
+Covers three behaviours:
 
 1. `QtcncServer` re-publishes a full `state.snapshot` every
    `snapshot_interval_s` even when nothing has changed, so slow joiners

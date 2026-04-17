@@ -29,8 +29,9 @@ Signal-routed hooks (auto-connected iff overridden):
 * `on_file_missing(path)` ← `status.program_missing`
 * `on_disconnected(reason)` ← `status.disconnected`
 * `on_reconnected()` ← `status.connected` (fired every time, not just after drop)
-* `on_device_added(device)` ← `devices.device_added` (v2)
-* `on_device_removed(device)` ← `devices.device_removed` (v2)
+* `on_message(msg)` ← `status.message`
+* `on_device_added(device)` ← `devices.device_added`
+* `on_device_removed(device)` ← `devices.device_removed`
 """
 
 from __future__ import annotations
@@ -44,7 +45,14 @@ from qtpy.QtWidgets import QMainWindow, QWidget
 from qtcnc.core.command import Command
 from qtcnc.core.hal_spec import HalPinSpec
 from qtcnc.core.status import Status
-from qtcnc.core.types import ErrorSeverity, ProgramState, TaskMode
+from qtcnc.core.types import (
+    ErrorSeverity,
+    Message,
+    MessageSeverity,
+    MessageSource,
+    ProgramState,
+    TaskMode,
+)
 from qtcnc.widgets.hal import HalPinHub
 
 
@@ -93,6 +101,7 @@ class HandlerContext:
     hal: HalPinHub
     config: Any = None  # QtcncConfig once that module exists
     devices: Any = None  # qtcnc.core.devices.Devices; None in tests that don't need it
+    message_bus: Any = None  # qtcnc.core.message_bus.MessageBus; None in tests that don't create one
 
 
 class QtcncHandler:
@@ -107,6 +116,11 @@ class QtcncHandler:
         self.hal = ctx.hal
         self.config = ctx.config
         self.devices = ctx.devices
+        self.messages = ctx.message_bus
+
+    def post_message(self, severity: MessageSeverity, text: str) -> None:
+        if self.messages is not None:
+            self.messages.post(severity, MessageSource.USER, text)
 
     # ----- Lifecycle (bootstrap calls these directly) -----
 
@@ -137,6 +151,8 @@ class QtcncHandler:
     def on_disconnected(self, reason: str) -> None: ...
     def on_reconnected(self) -> None: ...
 
+    def on_message(self, msg: Message) -> None: ...
+
 
 # ---------------------------------------------------------------------------
 # Auto-connect
@@ -158,6 +174,7 @@ _HANDLER_SIGNALS: dict[str, str] = {
     "on_file_missing": "program_missing",
     "on_disconnected": "disconnected",
     "on_reconnected": "connected",
+    "on_message": "message",
 }
 
 # Hooks routed through `ctx.devices` instead of `ctx.status`. Same

@@ -1,0 +1,11 @@
+# qtcnc manual tool change — runs after DECLARE_PINS creates the
+# qtcnc.manual-tool-change.* pins on the qtcnc HAL component.
+
+# core_sim.hal loops tool-change directly back to tool-changed for
+# instant M6. Unlink both sides so we can route through the dialog.
+unlinkp iocontrol.0.tool-change
+unlinkp iocontrol.0.tool-changed
+
+net tool-change      iocontrol.0.tool-change      qtcnc.manual-tool-change.change
+net tool-changed     iocontrol.0.tool-changed      qtcnc.manual-tool-change.changed
+net tool-prep-number iocontrol.0.tool-prep-number  qtcnc.manual-tool-change.number

@@ -82,7 +82,7 @@ class TestToWireEnums:
         assert to_wire(SpindleDir.REVERSE) == -1
 
     def test_str_enum(self):
-        assert to_wire(CommandVerb.ESTOP) == "estop"
+        assert to_wire(CommandVerb.STATE_ESTOP) == "state_estop"
         assert to_wire(MessageType.HELLO) == "hello"
         assert to_wire(Lifecycle.PROGRAM_LOADED) == "program_loaded"
 
@@ -181,7 +181,7 @@ class TestFromWirePrimitives:
         assert from_wire(2, TaskMode) == TaskMode.AUTO
 
     def test_str_enum(self):
-        assert from_wire("estop", CommandVerb) == CommandVerb.ESTOP
+        assert from_wire("state_estop", CommandVerb) == CommandVerb.STATE_ESTOP
 
     def test_int_enum_invalid(self):
         with pytest.raises(CodecError):
@@ -308,10 +308,10 @@ class TestFromWireDataclass:
 
 
 class TestFromWireDataclassErrors:
-    def test_unknown_field(self):
+    def test_unknown_field_is_dropped(self):
         data = {"x": 1.0, "y": 2.0, "z": 3.0, "extra": 99}
-        with pytest.raises(FieldMismatch):
-            from_wire(data, Position)
+        back = from_wire(data, Position)
+        assert back == Position(x=1.0, y=2.0, z=3.0)
 
     def test_missing_required_field(self):
         # ErrorMessage has all required fields (no defaults)

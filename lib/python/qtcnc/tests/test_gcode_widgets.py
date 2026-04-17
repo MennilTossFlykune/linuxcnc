@@ -1,7 +1,7 @@
 """End-to-end tests for `GcodeView` and `GcodePreview` in mock mode.
 
 Both widgets are file-driven: they listen for `program_loaded` and
-pull the file contents themselves (direct disk read in v1). The tests
+pull the file contents themselves via a direct disk read. The tests
 write small .ngc files under pytest's `tmp_path`, drive MockTransport's
 `load_program()` to fire the lifecycle, and assert the widget reacts.
 
@@ -140,15 +140,14 @@ class TestGcodeView:
         w.load_file(str(tmp_path / "nonexistent.ngc"))
         assert "could not read" in w.toPlainText()
 
-    def test_program_line_changed_signal_drives_highlight(self, tmp_path: Path):
+    def test_motion_line_changed_signal_drives_highlight(self, tmp_path: Path):
         t, status, _, _, (w,) = self._mk()
         from dataclasses import replace
         path = _write_ngc(tmp_path, "auto.ngc", "G21\nG0 X1\nG1 X2\nG1 X3")
         t.load_program(str(path))
         QApplication.processEvents()
-        # Push a new ProgramState with current_line=2 through the diff pipeline.
         old_program = t.get_snapshot().program
-        new_program = replace(old_program, current_line=2)
+        new_program = replace(old_program, motion_line=2)
         t.mutate_state(program=new_program)
         QApplication.processEvents()
         assert w.current_line == 2

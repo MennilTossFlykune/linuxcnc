@@ -27,8 +27,10 @@ import importlib.util
 import inspect
 import os
 import sys
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import TracebackType
 from typing import Any, Optional
 
 from qtpy.QtWidgets import QMainWindow
@@ -37,6 +39,7 @@ from qtcnc.core.command import Command
 from qtcnc.core.config import QtcncConfig
 from qtcnc.core.devices import Devices
 from qtcnc.core.hal_spec import HalPinSpec
+from qtcnc.core.message_bus import MessageBus
 from qtcnc.core.status import Status
 from qtcnc.handler import (
     HandlerContext,
@@ -63,6 +66,7 @@ class BootstrapResult:
     config: QtcncConfig
     reconnector: Reconnector
     devices: Devices
+    message_bus: MessageBus = field(default_factory=MessageBus)
     declared_pins: list[HalPinSpec] = field(default_factory=list)
     created_pins: list[str] = field(default_factory=list)
     widgets: list[QtcncWidget] = field(default_factory=list)
@@ -102,14 +106,17 @@ def bootstrap_programmatic(
         config = QtcncConfig.mock_default()
 
     status = Status(transport)
-    command = Command(transport)
+    command = Command(transport, status=status)
     hub = HalPinHub(transport)
+    message_bus = MessageBus(parent=window)
+    message_bus.connect_status(status)
 
     window.qtcnc_status = status
     window.qtcnc_command = command
     window.qtcnc_hal = hub
     window.qtcnc_transport = transport
     window.qtcnc_config = config
+    window.qtcnc_messages = message_bus
 
     welcome = transport.hello()
     status.bootstrap()
@@ -144,6 +151,7 @@ def bootstrap_programmatic(
         hal=hub,
         config=config,
         devices=devices,
+        message_bus=message_bus,
     )
     handler = handler_cls(ctx)
     window.qtcnc_handler = handler
@@ -170,10 +178,11 @@ def bootstrap_programmatic(
         result = transport.declare_pins(declared)
         created_names = result.created
         if result.inherited:
-            print(
-                f"[qtcnc] inherited {len(created_names)} HAL pins from"
-                f" existing daemon session",
-                file=sys.stderr,
+            from qtcnc.core.types import MessageSeverity, MessageSource
+            message_bus.post(
+                MessageSeverity.INFO,
+                MessageSource.FRAMEWORK,
+                f"inherited {len(created_names)} HAL pins from existing daemon session",
             )
         for name in created_names:
             hub.get_or_create(name)
@@ -186,6 +195,12 @@ def bootstrap_programmatic(
 
     # Wire handler's on_* hooks.
     auto_connect_handler(handler)
+
+    # Toast overlay sits above all other widgets on the main window.
+    from qtcnc.widgets.common.toast_overlay import ToastOverlay
+    toast_overlay = ToastOverlay(window)
+    toast_overlay.connect_bus(message_bus)
+    window.qtcnc_toast = toast_overlay
 
     # Lifecycle
     handler.on_startup()
@@ -203,6 +218,7 @@ def bootstrap_programmatic(
         config=config,
         reconnector=reconnector,
         devices=devices,
+        message_bus=message_bus,
         declared_pins=declared,
         created_pins=created_names,
         widgets=widgets,
@@ -277,9 +293,55 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _slot_exception_hook(
+    exc_type: type[BaseException],
+    exc_value: BaseException,
+    exc_tb: Optional[TracebackType],
+) -> None:
+    """Log unhandled exceptions without aborting the Qt event loop.
+
+    PyQt5 calls `qFatal` on uncaught slot exceptions unless `sys.excepthook`
+    is set — that path kills the process with SIGABRT and buries any
+    server-side error text. Keep the client alive so the user can see what
+    happened and retry.
+
+    NackErrors from guard refusals are expected when the UI state is
+    slightly stale — route them to DEBUG instead of printing a traceback.
+    """
+    import logging
+
+    if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+
+    log = logging.getLogger("qtcnc.bootstrap")
+
+    from qtcnc.transport.base import NackError
+    if issubclass(exc_type, NackError):
+        log.debug("command refused: %s", exc_value)
+        from qtcnc.core.types import MessageSeverity, MessageSource
+        try:
+            from qtpy.QtWidgets import QApplication
+            win = QApplication.activeWindow()
+            bus = getattr(win, "qtcnc_messages", None)
+            if bus is not None:
+                bus.post(MessageSeverity.DEBUG, MessageSource.FRAMEWORK,
+                         f"command refused: {exc_value}")
+        except Exception:
+            pass
+        return
+
+    log.exception("unhandled exception in slot/handler:",
+                  exc_info=(exc_type, exc_value, exc_tb))
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     from qtpy.QtWidgets import QApplication
     from qtpy import uic
+    from qtcnc.logging_setup import setup_logging
+
+    setup_logging()
+    sys.excepthook = _slot_exception_hook
 
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 

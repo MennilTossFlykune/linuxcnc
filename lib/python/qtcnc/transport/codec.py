@@ -14,6 +14,12 @@ module. It has two layers:
    the whole thing. The inverse pulls the envelope fields out and
    returns them as an `Envelope` dataclass.
 
+Protocol minor versions are additive-only: a daemon at (1, N+k) may send
+fields that a client at (1, N) has never heard of. `_dataclass_from_dict`
+silently drops unknown keys so the older side still reconstructs the
+slice of the dataclass it does know about. A field that only lands in a
+newer schema falls back to the dataclass default on the older side.
+
 No Qt imports. No pyzmq imports. Pure-Python + msgpack so both the
 daemon and the client can share this file and so tests run without
 any IPC setup.
@@ -99,6 +105,8 @@ def to_wire(value: Any) -> Any:
         return {f.name: to_wire(getattr(value, f.name)) for f in fields(value)}
     if isinstance(value, tuple):
         return [to_wire(v) for v in value]
+    if isinstance(value, frozenset):
+        return [to_wire(v) for v in sorted(value)]
     if isinstance(value, list):
         return [to_wire(v) for v in value]
     if isinstance(value, dict):
@@ -150,6 +158,10 @@ def from_wire(value: Any, target: Any) -> Any:
             return tuple(from_wire(v, a) for v, a in zip(value, args))
         return tuple(value)
 
+    if origin is frozenset:
+        inner = args[0] if args else Any
+        return frozenset(from_wire(v, inner) for v in value)
+
     if origin is list:
         inner = args[0] if args else Any
         return [from_wire(v, inner) for v in value]
@@ -188,13 +200,13 @@ def from_wire(value: Any, target: Any) -> Any:
 
 
 def _dataclass_from_dict(cls: type, data: dict[str, Any]) -> Any:
-    """Build a dataclass instance from a dict, validating fields."""
+    """Build a dataclass instance from a dict, validating fields.
+
+    Unknown keys are silently dropped so a (1, N) client can decode a
+    payload from a (1, N+k) daemon that added fields under the same
+    major version.
+    """
     cls_fields = {f.name: f for f in fields(cls)}
-    unknown = set(data) - set(cls_fields)
-    if unknown:
-        raise FieldMismatch(
-            f"{cls.__name__} got unexpected field(s): {sorted(unknown)}"
-        )
     hints = _resolved_hints(cls)
     kwargs: dict[str, Any] = {}
     for name, f in cls_fields.items():

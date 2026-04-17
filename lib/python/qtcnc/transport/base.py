@@ -26,7 +26,7 @@ from typing import Any, Callable, Optional
 
 from qtcnc.core.hal_spec import HalPinSpec
 from qtcnc.core.state import StateStore
-from qtcnc.core.types import ErrorMessage
+from qtcnc.core.types import ErrorMessage, GetToolDbResult
 from qtcnc.signals import CommandVerb
 
 
@@ -180,6 +180,24 @@ class Transport(ABC):
     @abstractmethod
     def close(self) -> None:
         """Tear down sockets/threads. Idempotent."""
+
+    # --- tool database ---
+
+    @abstractmethod
+    def get_tool_db(self) -> GetToolDbResult:
+        """Fetch the full tool database from the daemon."""
+
+    @abstractmethod
+    def add_tool(self, tool_id: int, pocket: int, **fields: Any) -> None:
+        """Add a tool to the database. Raises NackError on failure."""
+
+    @abstractmethod
+    def remove_tool(self, tool_id: int) -> None:
+        """Remove a tool from the database. Raises NackError on failure."""
+
+    @abstractmethod
+    def update_tool(self, tool_id: int, **fields: Any) -> None:
+        """Update a tool's fields. Raises NackError on failure."""
 
     # --- liveness + reopen (used by Reconnector) ---
 

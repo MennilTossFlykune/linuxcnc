@@ -50,7 +50,7 @@ import zmq
 from qtcnc import PROTOCOL_VERSION
 from qtcnc.core.hal_spec import HalPinSpec
 from qtcnc.core.state import StateStore
-from qtcnc.core.types import ErrorMessage
+from qtcnc.core.types import ErrorMessage, GetToolDbResult, ToolDbEntry
 from qtcnc.signals import CommandVerb, MessageType, Topic
 from qtcnc.transport.base import (
     DeclarePinsResult,
@@ -329,6 +329,32 @@ class ZmqClientTransport(Transport):
 
     def subscribe_pin(self, name: str) -> None:
         self._request(MessageType.SUBSCRIBE_PIN, {"name": name})
+
+    def get_tool_db(self) -> GetToolDbResult:
+        payload = self._request(MessageType.GET_TOOL_DB, {})
+        tools = tuple(
+            from_wire(t, ToolDbEntry) for t in payload.get("tools", ())
+        )
+        return GetToolDbResult(
+            tools=tools,
+            spindle_tool_id=int(payload.get("spindle_tool_id", 0)),
+            random_toolchanger=bool(payload.get("random_toolchanger", False)),
+        )
+
+    def add_tool(self, tool_id: int, pocket: int, **fields: Any) -> None:
+        self._request(
+            MessageType.ADD_TOOL,
+            {"tool_id": tool_id, "pocket": pocket, **fields},
+        )
+
+    def remove_tool(self, tool_id: int) -> None:
+        self._request(MessageType.REMOVE_TOOL, {"tool_id": tool_id})
+
+    def update_tool(self, tool_id: int, **fields: Any) -> None:
+        self._request(
+            MessageType.UPDATE_TOOL,
+            {"tool_id": tool_id, **fields},
+        )
 
     def ping(self, nonce: int | None = None) -> dict[str, Any]:
         """Send a PING and return the PONG payload.

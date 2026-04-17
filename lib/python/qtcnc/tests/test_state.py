@@ -8,16 +8,27 @@ import pytest
 
 from qtcnc.core.state import StateStore, apply, diff
 from qtcnc.core.types import (
+    AxisState,
+    CoolantState,
+    ExecState,
+    InterpSettings,
     InterpState,
+    IoState,
+    JointState,
     MachineState,
+    Offsets,
     Overrides,
     Position,
+    ProbeState,
     ProgramState,
+    ProgramUnits,
     SpindleDir,
     SpindleState,
+    TaskInfo,
     TaskMode,
     TaskState,
     Tool,
+    ToolEntry,
 )
 
 
@@ -65,6 +76,18 @@ class TestDiffIdentity:
             rapid_rate=1000.0,
             active_gcodes=(20, 90),
             active_mcodes=(3,),
+            task_info=TaskInfo(rcs_state=3, exec_state=ExecState.WAITING_FOR_IO),
+            offsets=Offsets(g5x_index=2, rotation_xy=45.0),
+            active_settings=InterpSettings(feed=100.0),
+            joints=(JointState(output=1.0),),
+            axes=(AxisState(velocity=5.0),),
+            tool_table=(ToolEntry(id=1, diameter=6.0),),
+            coolant=CoolantState(mist=True, flood=True),
+            probe=ProbeState(tripped=True, value=1),
+            io=IoState(digital_in=(True,), pocket_prepped=2, aux_estop=True),
+            commanded_position=Position(x=5.0),
+            heartbeat=123,
+            taskbeat=456,
         )
         changes = diff(old, new)
         changed_names = {name for name, _ in changes}
@@ -110,6 +133,38 @@ class TestDiffSpecificFields:
         name, value = changes[0]
         assert name == "spindles"
         assert value[0].speed == 1500
+
+    def test_nested_task_info_change_emits_whole_field(self):
+        old = StateStore()
+        new = StateStore(task_info=TaskInfo(optional_stop=True))
+        changes = diff(old, new)
+        assert len(changes) == 1
+        name, value = changes[0]
+        assert name == "task_info"
+        assert value.optional_stop is True
+
+    def test_joints_tuple_single_field_mutation(self):
+        old = StateStore(joints=(JointState(ferror_current=0.0),))
+        new = StateStore(joints=(JointState(ferror_current=0.01),))
+        changes = diff(old, new)
+        assert len(changes) == 1
+        assert changes[0][0] == "joints"
+        assert changes[0][1][0].ferror_current == 0.01
+
+    def test_tool_table_tuple_change(self):
+        old = StateStore()
+        new = StateStore(tool_table=(ToolEntry(id=1, diameter=6.0),))
+        changes = diff(old, new)
+        assert len(changes) == 1
+        name, value = changes[0]
+        assert name == "tool_table"
+        assert len(value) == 1
+        assert value[0].id == 1
+
+    def test_heartbeat_only_diff(self):
+        old = StateStore(heartbeat=10)
+        new = StateStore(heartbeat=11)
+        assert diff(old, new) == [("heartbeat", 11)]
 
 
 class TestApply:

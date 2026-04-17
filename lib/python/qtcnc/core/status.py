@@ -29,6 +29,8 @@ Signal design rules:
 
 from __future__ import annotations
 
+import os.path
+import time
 from dataclasses import fields, replace
 from typing import Any, Callable
 
@@ -39,7 +41,11 @@ from qtcnc.core.types import (
     ErrorMessage,
     ErrorSeverity,
     InterpState,
+    JointState,
     MachineState,
+    Message,
+    MessageSeverity,
+    MessageSource,
     Overrides,
     Position,
     ProgramState,
@@ -73,6 +79,8 @@ class Status(QObject):
     motion_type_changed = Signal(object)       # MotionType
     homed_changed = Signal(int, bool)
     all_homed_changed = Signal(bool)
+    homing_changed = Signal(int, bool)         # (joint, is_homing)
+    any_homing_changed = Signal(bool)
     machine_state_changed = Signal(object)     # MachineState umbrella
 
     # --- Position ---
@@ -90,11 +98,14 @@ class Status(QObject):
     program_started = Signal()
     program_paused = Signal()
     program_finished = Signal(bool)            # success
-    program_line_changed = Signal(int)         # ProgramState.current_line
+    program_line_changed = Signal(int)         # ProgramState.current_line (interpreter read-ahead)
+    motion_line_changed = Signal(int)          # ProgramState.motion_line (line being executed)
+    program_tools_changed = Signal(object)     # ProgramState.requested_tools (frozenset[int])
 
     # --- Tool / spindle / feed ---
     tool_changed = Signal(object)              # Tool
     tool_in_spindle_changed = Signal(int)
+    tool_table_changed = Signal(object)        # tuple[ToolEntry, ...]
     spindle_speed_changed = Signal(int, float)
     spindle_direction_changed = Signal(int, object)  # (index, SpindleDir)
     feed_rate_changed = Signal(float)
@@ -104,11 +115,21 @@ class Status(QObject):
     feed_override_changed = Signal(float)
     rapid_override_changed = Signal(float)
     spindle_override_changed = Signal(int, float)
+    overrides_changed = Signal(object)         # Overrides umbrella
+
+    # --- Coolant ---
+    coolant_changed = Signal(object)           # CoolantState
+
+    # --- Task / interpreter bookkeeping ---
+    task_info_changed = Signal(object)         # TaskInfo umbrella
+    spindles_changed = Signal(object)          # tuple[SpindleState, ...] umbrella
+    offsets_changed = Signal(object)           # Offsets umbrella
 
     # --- Active codes + errors ---
     active_gcodes_changed = Signal(object)     # tuple[int, ...]
     active_mcodes_changed = Signal(object)     # tuple[int, ...]
     error = Signal(object, str)                # ErrorSeverity, text
+    message = Signal(object)                   # Message
 
     # ----- construction -----
 
@@ -153,25 +174,70 @@ class Status(QObject):
         if not self._state.connected:
             self._state = replace(self._state, connected=True)
         self.connected.emit()
+        _post_info(self, "Connected to daemon")
 
     def _on_disconnected(self, reason: str) -> None:
         if self._state.connected:
             self._state = replace(self._state, connected=False)
         self.disconnected.emit(reason)
+        self.message.emit(Message(
+            severity=MessageSeverity.WARNING, source=MessageSource.FRAMEWORK,
+            text=f"Disconnected: {reason}", timestamp=time.time(),
+        ))
 
     def _on_error(self, err: ErrorMessage) -> None:
         self.error.emit(err.severity, err.text)
+        if err.severity in (ErrorSeverity.OPERATOR_ERROR, ErrorSeverity.NML_ERROR):
+            sev = MessageSeverity.ERROR
+        else:
+            sev = MessageSeverity.INFO
+        self.message.emit(Message(
+            severity=sev, source=MessageSource.LINUXCNC,
+            text=err.text, timestamp=err.timestamp,
+        ))
 
     def _on_lifecycle(self, tag: str, payload: dict[str, Any]) -> None:
         if tag == Lifecycle.PROGRAM_LOADING:
-            self.program_loading.emit(payload.get("path", ""))
+            path = payload.get("path", "")
+            self.program_loading.emit(path)
+            _post_info(self, f"Loading {_basename(path)}")
         elif tag == Lifecycle.PROGRAM_LOADED:
-            ps = payload.get("program") or ProgramState(path=payload.get("path", ""))
-            self.program_loaded.emit(payload.get("path", ""), ps)
+            path = payload.get("path", "")
+            raw = payload.get("program")
+            # Over the wire the daemon's ProgramState arrives as a plain
+            # dict (`to_wire(dataclass)`). MockTransport dispatches the
+            # dataclass instance directly. Accept either and always hand
+            # the slot a typed ProgramState so handlers can use attribute
+            # access without discovering the underlying transport.
+            if isinstance(raw, ProgramState):
+                ps = raw
+            elif isinstance(raw, dict):
+                ps = ProgramState(**{
+                    k: v for k, v in raw.items()
+                    if k in {"path", "total_lines", "current_line",
+                             "is_running", "is_paused"}
+                })
+            else:
+                ps = ProgramState(path=path)
+            self.program_loaded.emit(path, ps)
+            _post_info(self, f"Loaded {_basename(path)}")
         elif tag == Lifecycle.PROGRAM_LOAD_FAILED:
-            self.program_load_failed.emit(payload.get("path", ""), payload.get("reason", ""))
+            path = payload.get("path", "")
+            reason = payload.get("reason", "")
+            self.program_load_failed.emit(path, reason)
+            self.message.emit(Message(
+                severity=MessageSeverity.WARNING, source=MessageSource.FRAMEWORK,
+                text=f"Failed to load {_basename(path)}: {reason}",
+                timestamp=time.time(),
+            ))
         elif tag == Lifecycle.PROGRAM_MISSING:
-            self.program_missing.emit(payload.get("path", ""))
+            path = payload.get("path", "")
+            self.program_missing.emit(path)
+            self.message.emit(Message(
+                severity=MessageSeverity.WARNING, source=MessageSource.FRAMEWORK,
+                text=f"File not found: {_basename(path)}",
+                timestamp=time.time(),
+            ))
         elif tag == Lifecycle.PROGRAM_CLOSED:
             self.program_closed.emit()
         elif tag == Lifecycle.PROGRAM_FINISHED:
@@ -229,6 +295,18 @@ class Status(QObject):
 # ---------------------------------------------------------------------------
 
 
+def _basename(path: str) -> str:
+    return os.path.basename(path) if path else path
+
+
+def _post_info(status: Status, text: str) -> None:
+    """Emit a framework-level INFO message for common state transitions."""
+    status.message.emit(Message(
+        severity=MessageSeverity.INFO, source=MessageSource.FRAMEWORK,
+        text=text, timestamp=time.time(),
+    ))
+
+
 def _noop(status: Status, old: StateStore, new_value: Any) -> None:
     pass
 
@@ -242,27 +320,28 @@ def _h_machine(status: Status, old: StateStore, new_value: MachineState) -> None
     m_new = new_value
     if m_old.estop != m_new.estop:
         status.estop_changed.emit(m_new.estop)
+        _post_info(status, "E-stop asserted" if m_new.estop else "E-stop reset")
     if m_old.powered != m_new.powered:
         status.power_changed.emit(m_new.powered)
+        _post_info(status, "Machine powered on" if m_new.powered else "Machine powered off")
     if m_old.task_mode != m_new.task_mode:
         status.task_mode_changed.emit(m_new.task_mode)
+        _post_info(status, f"Mode: {m_new.task_mode.name}")
     if m_old.interp_state != m_new.interp_state:
         status.interp_state_changed.emit(m_new.interp_state)
     if m_old.motion_type != m_new.motion_type:
         status.motion_type_changed.emit(m_new.motion_type)
     if m_old.homed != m_new.homed:
-        # Emit one homed_changed per axis that changed.
         max_len = max(len(m_old.homed), len(m_new.homed))
         for axis in range(max_len):
             old_val = m_old.homed[axis] if axis < len(m_old.homed) else False
             new_val = m_new.homed[axis] if axis < len(m_new.homed) else False
             if old_val != new_val:
                 status.homed_changed.emit(axis, new_val)
-        # All-homed (only meaningful when homed has any entries).
-        old_all = bool(m_old.homed) and all(m_old.homed)
-        new_all = bool(m_new.homed) and all(m_new.homed)
-        if old_all != new_all:
-            status.all_homed_changed.emit(new_all)
+        if m_old.is_all_homed != m_new.is_all_homed:
+            status.all_homed_changed.emit(m_new.is_all_homed)
+            if m_new.is_all_homed:
+                _post_info(status, "All axes homed")
     status.machine_state_changed.emit(m_new)
 
 
@@ -298,8 +377,10 @@ def _h_program(status: Status, old: StateStore, new_value: ProgramState) -> None
         and not p_new.is_paused
     ):
         status.program_started.emit()
+        _post_info(status, "Program running")
     if not p_old.is_paused and p_new.is_paused:
         status.program_paused.emit()
+        _post_info(status, "Program paused")
     # program_finished: transition out of running without entering pause.
     # Success is inferred from the current interp_state: IDLE means a clean
     # end; anything else (e.g. the machine went to estop mid-run) is reported
@@ -308,10 +389,13 @@ def _h_program(status: Status, old: StateStore, new_value: ProgramState) -> None
         interp_new = status._state.machine.interp_state
         success = interp_new == InterpState.IDLE
         status.program_finished.emit(success)
-    # Fires on any current_line change so `GcodeView` / `GcodePreview` can
-    # highlight the active line without re-subscribing on every state diff.
+        _post_info(status, "Program completed" if success else "Program aborted")
     if p_old.current_line != p_new.current_line:
         status.program_line_changed.emit(int(p_new.current_line))
+    if p_old.motion_line != p_new.motion_line:
+        status.motion_line_changed.emit(int(p_new.motion_line))
+    if p_old.requested_tools != p_new.requested_tools:
+        status.program_tools_changed.emit(p_new.requested_tools)
 
 
 def _h_tool(status: Status, old: StateStore, new_value: Any) -> None:
@@ -320,6 +404,10 @@ def _h_tool(status: Status, old: StateStore, new_value: Any) -> None:
 
 def _h_tool_in_spindle(status: Status, old: StateStore, new_value: int) -> None:
     status.tool_in_spindle_changed.emit(new_value)
+
+
+def _h_tool_table(status: Status, old: StateStore, new_value: Any) -> None:
+    status.tool_table_changed.emit(new_value)
 
 
 def _h_spindles(
@@ -331,6 +419,7 @@ def _h_spindles(
             status.spindle_speed_changed.emit(idx, new_sp.speed)
         if old_sp.direction != new_sp.direction:
             status.spindle_direction_changed.emit(idx, new_sp.direction)
+    status.spindles_changed.emit(new_value)
 
 
 def _h_overrides(status: Status, old: StateStore, new_value: Overrides) -> None:
@@ -345,6 +434,19 @@ def _h_overrides(status: Status, old: StateStore, new_value: Overrides) -> None:
             old_val = o_old.spindles[idx] if idx < len(o_old.spindles) else 1.0
             if old_val != val:
                 status.spindle_override_changed.emit(idx, val)
+    status.overrides_changed.emit(o_new)
+
+
+def _h_coolant(status: Status, old: StateStore, new_value: Any) -> None:
+    status.coolant_changed.emit(new_value)
+
+
+def _h_task_info(status: Status, old: StateStore, new_value: Any) -> None:
+    status.task_info_changed.emit(new_value)
+
+
+def _h_offsets(status: Status, old: StateStore, new_value: Any) -> None:
+    status.offsets_changed.emit(new_value)
 
 
 def _h_feed_rate(status: Status, old: StateStore, new_value: float) -> None:
@@ -363,6 +465,24 @@ def _h_active_mcodes(status: Status, old: StateStore, new_value: tuple[int, ...]
     status.active_mcodes_changed.emit(new_value)
 
 
+def _h_joints(
+    status: Status, old: StateStore, new_value: tuple[JointState, ...]
+) -> None:
+    old_joints = old.joints
+    old_any = any(j.is_homing for j in old_joints)
+    new_any = any(j.is_homing for j in new_value)
+    for idx, new_j in enumerate(new_value):
+        old_j = old_joints[idx] if idx < len(old_joints) else JointState()
+        if old_j.is_homing != new_j.is_homing:
+            status.homing_changed.emit(idx, new_j.is_homing)
+    if old_any != new_any:
+        status.any_homing_changed.emit(new_any)
+        if new_any:
+            _post_info(status, "Homing in progress")
+        else:
+            _post_info(status, "Homing complete")
+
+
 _FIELD_HANDLERS: dict[str, Callable[[Status, StateStore, Any], None]] = {
     "connected": _noop,  # handled by on_connected/_on_disconnected
     "task_state": _h_task_state,
@@ -379,6 +499,21 @@ _FIELD_HANDLERS: dict[str, Callable[[Status, StateStore, Any], None]] = {
     "rapid_rate": _h_rapid_rate,
     "active_gcodes": _h_active_gcodes,
     "active_mcodes": _h_active_mcodes,
+    # Full `linuxcnc.stat()` coverage lands on StateStore but dedicated Qt
+    # signals for each field are wired only when a widget consumes them.
+    # Widgets can still read these fields directly from `status.state.*`.
+    "task_info": _h_task_info,
+    "offsets": _h_offsets,
+    "active_settings": _noop,
+    "joints": _h_joints,
+    "axes": _noop,
+    "tool_table": _h_tool_table,
+    "coolant": _h_coolant,
+    "probe": _noop,
+    "io": _noop,
+    "commanded_position": _noop,
+    "heartbeat": _noop,
+    "taskbeat": _noop,
 }
 
 

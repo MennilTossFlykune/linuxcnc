@@ -36,7 +36,7 @@ class TestCommandVerb:
         assert len(values) == len(set(values))
 
     def test_core_verbs_present(self):
-        for name in ("ESTOP", "POWER_ON", "SET_MODE", "HOME_AXIS", "JOG_START", "MDI"):
+        for name in ("STATE_ESTOP", "STATE_ON", "SET_MODE", "HOME", "JOG_CONTINUOUS", "MDI"):
             assert hasattr(CommandVerb, name)
 
 

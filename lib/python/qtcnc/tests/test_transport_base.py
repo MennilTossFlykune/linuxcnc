@@ -8,7 +8,7 @@ import pytest
 
 from qtcnc.core.hal_spec import HalPinSpec
 from qtcnc.core.state import StateStore
-from qtcnc.core.types import ErrorMessage, ErrorSeverity
+from qtcnc.core.types import ErrorMessage, ErrorSeverity, GetToolDbResult
 from qtcnc.signals import CommandVerb
 from qtcnc.transport.base import (
     DeclarePinsResult,
@@ -50,6 +50,18 @@ class _StubTransport(Transport):
 
     def close(self) -> None:
         self._closed = True
+
+    def get_tool_db(self) -> GetToolDbResult:
+        return GetToolDbResult()
+
+    def add_tool(self, tool_id: int, pocket: int, **fields: Any) -> None:
+        return None
+
+    def remove_tool(self, tool_id: int) -> None:
+        return None
+
+    def update_tool(self, tool_id: int, **fields: Any) -> None:
+        return None
 
     @property
     def is_connected(self) -> bool:

@@ -173,21 +173,21 @@ class TestAutoConnect:
         # 10 on_* methods overridden → 10 connections
         assert len(connections) == 10
 
-    def test_estop_reset_invokes_on_estop(self):
+    def test_state_estop_reset_invokes_on_estop(self):
         ctx, t, status = _build_context()
         h = _RecordingHandler(ctx)
         auto_connect_handler(h)
-        t.exec_command(CommandVerb.ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
         QApplication.processEvents()
         calls = [c for c in h.seen if c[0] == "on_estop"]
         assert calls == [("on_estop", (False,))]
 
-    def test_power_on_invokes_on_power(self):
+    def test_state_on_invokes_on_power(self):
         ctx, t, status = _build_context()
         h = _RecordingHandler(ctx)
         auto_connect_handler(h)
-        t.exec_command(CommandVerb.ESTOP_RESET)
-        t.exec_command(CommandVerb.POWER_ON)
+        t.exec_command(CommandVerb.STATE_ESTOP_RESET)
+        t.exec_command(CommandVerb.STATE_ON)
         QApplication.processEvents()
         calls = [c for c in h.seen if c[0] == "on_power"]
         assert calls == [("on_power", (True,))]
